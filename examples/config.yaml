@@ -1,0 +1,29 @@
+# Example p2pbk configuration.
+
+node:
+  data_dir: ~/.p2pbk
+  identity: identity.age
+  display_name: ""
+
+storage:
+  store_dir: ~/.p2pbk/store
+  cache_dir: ~/.p2pbk/cache
+  cache_size_bytes: 1073741824
+  offer_bytes: 10737418240
+
+network:
+  listen_addrs:
+    - /ip4/0.0.0.0/tcp/0
+    - /ip4/0.0.0.0/udp/0/quic-v1
+  bootstrap_peers: []
+  protocol_id: /p2pbk/1.0.0
+  min_peers: 3
+
+backup:
+  data_shards: 6
+  parity_shards: 3
+  roots: []
+
+trust:
+  challenge_interval: 1h
+  reputation_window: 720h
