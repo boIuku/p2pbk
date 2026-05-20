@@ -44,3 +44,16 @@ message DeleteShardRequest {
 message DeleteShardResponse {
   bool deleted = 1;
 }
+
+message ChallengeRequest {
+  ShardRef ref = 1;
+  string nonce = 2;
+  int64 offset = 3;
+  int64 length = 4;
+}
+
+message ChallengeResponse {
+  ShardRef ref = 1;
+  string nonce = 2;
+  string proof = 3;
+}

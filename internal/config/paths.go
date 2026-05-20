@@ -23,26 +23,26 @@ func Default() Config {
 	return cfg
 }
 
-func (c Config) Paths() (Paths, error) {
+func (c Config) Paths() (*Paths, error) {
 	dataDir, err := normalizePath(c.Node.DataDir)
 	if err != nil {
-		return Paths{}, fmt.Errorf("node.data_dir: %w", err)
+		return nil, fmt.Errorf("node.data_dir: %w", err)
 	}
 
 	identity, err := normalizeUnder(dataDir, c.Node.Identity)
 	if err != nil {
-		return Paths{}, fmt.Errorf("node.identity: %w", err)
+		return nil, fmt.Errorf("node.identity: %w", err)
 	}
 	storeDir, err := normalizeUnder(dataDir, c.Storage.StoreDir)
 	if err != nil {
-		return Paths{}, fmt.Errorf("storage.store_dir: %w", err)
+		return nil, fmt.Errorf("storage.store_dir: %w", err)
 	}
 	cacheDir, err := normalizeUnder(dataDir, c.Storage.CacheDir)
 	if err != nil {
-		return Paths{}, fmt.Errorf("storage.cache_dir: %w", err)
+		return nil, fmt.Errorf("storage.cache_dir: %w", err)
 	}
 
-	return Paths{
+	return &Paths{
 		DataDir:  dataDir,
 		Identity: identity,
 		LocalDB:  filepath.Join(dataDir, "local.db"),

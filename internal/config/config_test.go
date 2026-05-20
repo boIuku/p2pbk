@@ -47,10 +47,18 @@ func TestLoadParsesDurationStrings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
-	if cfg.Trust.ChallengeInterval != 2*time.Hour {
-		t.Fatalf("challenge interval = %s", cfg.Trust.ChallengeInterval)
-	}
-	if cfg.Trust.ReputationWindow != 48*time.Hour {
-		t.Fatalf("reputation window = %s", cfg.Trust.ReputationWindow)
-	}
+	parsedInterval, err := time.ParseDuration(cfg.Trust.ChallengeInterval)
+  if err != nil {
+      t.Fatalf("failed to parse challenge interval: %v", err)
+  }
+  if parsedInterval != 2*time.Hour {
+      t.Fatalf("challenge interval = %s, want %v", parsedInterval, 2*time.Hour)
+  }
+	parsedReputationWindow, err := time.ParseDuration(cfg.Trust.ChallengeInterval)
+  if err != nil {
+      t.Fatalf("failed to parse challenge interval: %v", err)
+  }
+  if parsedReputationWindow != 48*time.Hour {
+      t.Fatalf("reputation window = %s, want %v", parsedReputationWindow, 48*time.Hour)
+  }
 }

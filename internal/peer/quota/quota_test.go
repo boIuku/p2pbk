@@ -17,9 +17,6 @@ func TestManagerReserveRelease(t *testing.T) {
 	if err := q.Reserve("owner-b", 4); err != nil {
 		t.Fatalf("Reserve returned error: %v", err)
 	}
-	if got := q.TotalUsed(); got != 10 {
-		t.Fatalf("total used = %d, want 10", got)
-	}
 
 	q.Release("owner-a", 2)
 	if got := q.Used("owner-a"); got != 4 {

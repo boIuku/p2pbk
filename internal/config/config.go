@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/mitchellh/mapstructure"
 	"github.com/spf13/viper"
@@ -46,12 +45,13 @@ type BackupConfig struct {
 }
 
 type TrustConfig struct {
-	ChallengeInterval time.Duration `mapstructure:"challenge_interval"`
-	ReputationWindow  time.Duration `mapstructure:"reputation_window"`
+	ChallengeInterval    string `mapstructure:"challenge_interval"`
+	ReputationWindow     string `mapstructure:"reputation_window"`
+	ChallengeMaxLength   int64  `mapstructure:"challenge_max_length"`
+	IdentityPassphrase   string `mapstructure:"identity_passphrase"`
 }
 
-// Load reads config from path, applies defaults, overlays P2PBK_* environment
-// variables, and validates the result.
+// Load reads config from path, applies defaults, and validates.
 func Load(path string) (Config, error) {
 	v := viper.New()
 	applyDefaults(v)
@@ -77,6 +77,63 @@ func Load(path string) (Config, error) {
 	}
 	return cfg, nil
 }
+
+// LoadEnv only reads from environment variables and applies defaults.
+func LoadEnv() (Config, error) {
+	v := viper.New()
+	applyDefaults(v)
+
+	v.SetConfigType("env")
+	v.SetEnvPrefix("P2PBK")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+
+	var cfg Config
+	if err := v.Unmarshal(&cfg, viper.DecodeHook(mapstructure.StringToTimeDurationHookFunc())); err != nil {
+		return Config{}, fmt.Errorf("decode env: %w", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// FromViper creates a config from viper.
+func FromViper(v *viper.Viper) Config {
+	cfg := Config{
+		Node: NodeConfig{
+			DataDir:     v.GetString("node.data_dir"),
+			Identity:    v.GetString("node.identity"),
+			DisplayName: v.GetString("node.display_name"),
+		},
+		Storage: StorageConfig{
+			StoreDir:     v.GetString("storage.store_dir"),
+			CacheDir:     v.GetString("storage.cache_dir"),
+			CacheSizeBytes: v.GetInt64("storage.cache_size_bytes"),
+			OfferBytes:   v.GetInt64("storage.offer_bytes"),
+		},
+		Network: NetworkConfig{
+			ListenAddrs:    v.GetStringSlice("network.listen_addrs"),
+			BootstrapPeers: v.GetStringSlice("network.bootstrap_peers"),
+			ProtocolID:     v.GetString("network.protocol_id"),
+			MinPeers:       v.GetInt("network.min_peers"),
+		},
+		Backup: BackupConfig{
+			DataShards:   v.GetInt("backup.data_shards"),
+			ParityShards: v.GetInt("backup.parity_shards"),
+			Roots:        v.GetStringSlice("backup.roots"),
+		},
+		Trust: TrustConfig{
+			ChallengeInterval:   v.GetString("trust.challenge_interval"),
+			ReputationWindow:    v.GetString("trust.reputation_window"),
+			ChallengeMaxLength:  v.GetInt64("trust.challenge_max_length"),
+			IdentityPassphrase:  v.GetString("trust.identity_passphrase"),
+		},
+	}
+
+	return cfg
+}
+
 
 // Validate checks cross-field and range constraints.
 func (c Config) Validate() error {
@@ -109,11 +166,8 @@ func (c Config) Validate() error {
 	if c.Backup.ParityShards <= 0 {
 		errs = append(errs, errors.New("backup.parity_shards must be positive"))
 	}
-	if c.Trust.ChallengeInterval <= 0 {
-		errs = append(errs, errors.New("trust.challenge_interval must be positive"))
-	}
-	if c.Trust.ReputationWindow <= 0 {
-		errs = append(errs, errors.New("trust.reputation_window must be positive"))
+	if c.Trust.ChallengeMaxLength <= 0 {
+		errs = append(errs, errors.New("trust.challenge_max_length must be positive"))
 	}
 
 	return errors.Join(errs...)

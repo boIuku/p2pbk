@@ -15,6 +15,12 @@ func newRootCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(newInitCommand())
+	cmd.AddCommand(newStatusCommand())
+	cmd.AddCommand(newConfigCommand())
+	cmd.AddCommand(newAddCommand())
+	cmd.AddCommand(newBackupCommand())
+	cmd.AddCommand(newRestoreCommand())
+
 	cmd.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print build version",
