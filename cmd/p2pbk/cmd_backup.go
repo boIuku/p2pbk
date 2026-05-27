@@ -21,10 +21,15 @@ func newBackupCommand() *cobra.Command {
 			if len(args) < 2 {
 				return fmt.Errorf("usage: p2pbk backup <source> <target>")
 			}
-			// Placeholder implementation
-			fmt.Printf("Backup command (placeholder)\n")
-			fmt.Printf("Source: %s\n", args[0])
-			fmt.Printf("Target: %s\n", args[1])
+			repo, err := openLocalRepository(currentConfig())
+			if err != nil {
+				return err
+			}
+			idx, err := repo.Backup(args[0], args[1])
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "backed up %d file(s) as %s\n", len(idx.Entries), idx.Name)
 			return nil
 		},
 	}

@@ -1,13 +1,12 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 
 	"p2pbk/internal/config"
 )
@@ -25,38 +24,57 @@ func newConfigCommand() *cobra.Command {
 		Use:   "config",
 		Short: "Show or update p2pbk configuration",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			viper := viper.GetViper()
+			v := viper.GetViper()
 
 			if opts.getKey != "" {
-				val := viper.Get(opts.getKey)
+				val := v.Get(opts.getKey)
 				if val == nil {
 					return fmt.Errorf("setting %q not found", opts.getKey)
 				}
-				fmt.Printf("%v\n", val)
+				fmt.Fprintf(cmd.OutOrStdout(), "%v\n", val)
 				return nil
 			}
 
-			cfg := config.FromViper(viper)
-			paths, _ := cfg.Paths()
+			cfg := currentConfig()
+			if opts.setKey != "" {
+				if opts.setValue == "" {
+					return fmt.Errorf("--value is required with --set")
+				}
+				if err := applyConfigSet(&cfg, opts.setKey, opts.setValue); err != nil {
+					return err
+				}
+				path := viper.ConfigFileUsed()
+				if path == "" {
+					paths, err := cfg.Paths()
+					if err != nil {
+						return err
+					}
+					path = paths.DataDir + "/config.yaml"
+				}
+				if err := saveConfigFile(cfg, path); err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "updated %s\n", path)
+				return nil
+			}
 
-			fmt.Printf("Current configuration:\n")
-			fmt.Printf("Data dir: %s\n", paths.DataDir)
-			fmt.Printf("Store dir: %s\n", paths.StoreDir)
-			fmt.Printf("Cache dir: %s\n", paths.CacheDir)
-			fmt.Printf("Cache size: %d bytes\n", cfg.Storage.CacheSizeBytes)
-			fmt.Printf("Offer bytes: %d\n", cfg.Storage.OfferBytes)
-			fmt.Printf("Protocol: %s\n", cfg.Network.ProtocolID)
-			fmt.Printf("Min peers: %d\n", cfg.Network.MinPeers)
-			fmt.Printf("Data shards: %d\n", cfg.Backup.DataShards)
-			fmt.Printf("Parity shards: %d\n", cfg.Backup.ParityShards)
-			fmt.Printf("Challenge interval: %s\n", cfg.Trust.ChallengeInterval)
-			fmt.Printf("Reputation window: %s\n", cfg.Trust.ReputationWindow)
-			fmt.Println()
-
-			// Save config
-			if err := saveConfigFile(cfg, paths.DataDir+"/config.yaml"); err != nil {
+			paths, err := cfg.Paths()
+			if err != nil {
 				return err
 			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Current configuration:\n")
+			fmt.Fprintf(cmd.OutOrStdout(), "Data dir: %s\n", paths.DataDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "Store dir: %s\n", paths.StoreDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "Cache dir: %s\n", paths.CacheDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "Cache size: %d bytes\n", cfg.Storage.CacheSizeBytes)
+			fmt.Fprintf(cmd.OutOrStdout(), "Offer bytes: %d\n", cfg.Storage.OfferBytes)
+			fmt.Fprintf(cmd.OutOrStdout(), "Protocol: %s\n", cfg.Network.ProtocolID)
+			fmt.Fprintf(cmd.OutOrStdout(), "Min peers: %d\n", cfg.Network.MinPeers)
+			fmt.Fprintf(cmd.OutOrStdout(), "Data shards: %d\n", cfg.Backup.DataShards)
+			fmt.Fprintf(cmd.OutOrStdout(), "Parity shards: %d\n", cfg.Backup.ParityShards)
+			fmt.Fprintf(cmd.OutOrStdout(), "Challenge interval: %s\n", cfg.Trust.ChallengeInterval)
+			fmt.Fprintf(cmd.OutOrStdout(), "Reputation window: %s\n", cfg.Trust.ReputationWindow)
 
 			return nil
 		},
@@ -66,17 +84,14 @@ func newConfigCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.setValue, "value", "", "value to set")
 	cmd.Flags().StringVar(&opts.getKey, "get", "", "get a config value")
 
-	// Wire set flag
-	if opts.setKey != "" && opts.setValue != "" {
-		key := strings.ReplaceAll(opts.setKey, ".", "_")
-		viper.Set(key, opts.setValue)
-	}
-
 	return cmd
 }
 
 func saveConfigFile(cfg config.Config, path string) error {
-	data, _ := json.MarshalIndent(cfg, "", "  ")
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return err
 	}
@@ -90,11 +105,33 @@ func loadConfigFile(path string) (config.Config, error) {
 	}
 
 	var cfg config.Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return config.Config{}, err
 	}
 
 	// Apply defaults for missing values
 	cfg.Node.DataDir = os.ExpandEnv(cfg.Node.DataDir)
 	return cfg, nil
+}
+
+func applyConfigSet(cfg *config.Config, key, value string) error {
+	switch key {
+	case "node.data_dir":
+		cfg.Node.DataDir = value
+	case "node.display_name":
+		cfg.Node.DisplayName = value
+	case "storage.store_dir":
+		cfg.Storage.StoreDir = value
+	case "storage.cache_dir":
+		cfg.Storage.CacheDir = value
+	case "network.protocol_id":
+		cfg.Network.ProtocolID = value
+	case "trust.challenge_interval":
+		cfg.Trust.ChallengeInterval = value
+	case "trust.reputation_window":
+		cfg.Trust.ReputationWindow = value
+	default:
+		return fmt.Errorf("unsupported config key %q", key)
+	}
+	return cfg.Validate()
 }

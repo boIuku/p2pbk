@@ -1,9 +1,8 @@
 package localdb
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -130,8 +129,19 @@ func (db *DB) GetReceipt(ctx context.Context, ref blobserver.ShardRef) (*receipt
 // ListReceipts lists all receipts for an owner's blob.
 func (db *DB) ListReceipts(ctx context.Context, owner, blobID string) ([]receipts.Receipt, error) {
 	var out []receipts.Receipt
-
-	return out, nil // TODO: iterate over owned_blobs bucket
+	prefix := []byte(fmt.Sprintf("%s|%s|", owner, blobID))
+	err := db.View(func(tx *bbolt.Tx) error {
+		c := tx.Bucket([]byte(BucketReceipts)).Cursor()
+		for k, v := c.Seek(prefix); k != nil && bytesHasPrefix(k, prefix); k, v = c.Next() {
+			var r receipts.Receipt
+			if err := unmarshalReceipt(v, &r); err != nil {
+				return err
+			}
+			out = append(out, r)
+		}
+		return nil
+	})
+	return out, err
 }
 
 // ChallengeResult records the result of a challenge response.
@@ -143,26 +153,38 @@ func (db *DB) RecordChallengeResult(ctx context.Context, peer string, ref blobse
 			return errors.New("challenge_history bucket not found")
 		}
 
-		// Create or get existing challenge history entry
-		chr, err := newChallengeHistoryRecord(peer, ref.BlobID, success, proof) // Changed key to ref.BlobID
+		chr, err := newChallengeHistoryRecord(peer, ref.BlobID, success, proof)
 		if err != nil {
 			return err
 		}
+		chr.Timestamp = timestamp.UTC()
 
 		data, err := marshalChallengeHistoryRecord(chr)
 		if err != nil {
 			return err
 		}
 
-		return b.Put([]byte(peer+"|"+ref.BlobID), data) // Changed key to a composite key for challenges
+		key := fmt.Sprintf("%s|%s|%d|%d", ownerOrDefault(ref.Owner), ref.BlobID, ref.Index, timestamp.UnixNano())
+		return b.Put([]byte(key), data)
 	})
 }
 
 // GetChallengeHistory returns challenge history for a shard.
 func (db *DB) GetChallengeHistory(ctx context.Context, owner, blobID string) ([]ChallengeHistoryRecord, error) {
 	var out []ChallengeHistoryRecord
-
-	return out, nil // TODO: iterate over challenge_history bucket
+	prefix := []byte(fmt.Sprintf("%s|%s|", ownerOrDefault(owner), blobID))
+	err := db.View(func(tx *bbolt.Tx) error {
+		c := tx.Bucket([]byte(BucketChallengeHistory)).Cursor()
+		for k, v := c.Seek(prefix); k != nil && bytesHasPrefix(k, prefix); k, v = c.Next() {
+			var r ChallengeHistoryRecord
+			if err := unmarshalChallengeHistoryRecord(v, &r); err != nil {
+				return err
+			}
+			out = append(out, r)
+		}
+		return nil
+	})
+	return out, err
 }
 
 // ChallengeHistoryRecord represents a challenge result record.
@@ -188,19 +210,19 @@ func NewChallengeHistory() *ChallengeHistory {
 
 // Record adds a challenge result.
 func (h *ChallengeHistory) Record(owner, blobID string, peer string, success bool, proof string, nonce string, timestamp time.Time) {
-	key := fmt.Sprintf("%s|%.0f|%.0f", owner, blobID, 0)
+	key := fmt.Sprintf("%s|%s|%d", owner, blobID, 0)
 	h.records[key] = append(h.records[key], ChallengeHistoryRecord{
-		Peer:    peer,
-		Success: success,
-		Proof:   proof,
-		Nonce:   nonce,
+		Peer:      peer,
+		Success:   success,
+		Proof:     proof,
+		Nonce:     nonce,
 		Timestamp: timestamp,
 	})
 }
 
 // Get returns challenge history for a shard.
 func (h *ChallengeHistory) Get(owner, blobID string) []ChallengeHistoryRecord {
-	key := fmt.Sprintf("%s|%.0f|%.0f", owner, blobID, 0)
+	key := fmt.Sprintf("%s|%s|%d", owner, blobID, 0)
 	return h.records[key]
 }
 
@@ -215,62 +237,12 @@ func (h *ChallengeHistory) Track(peer string, success bool, timestamp time.Time)
 
 // marshalReceipt encodes a receipt to bytes.
 func marshalReceipt(r receipts.Receipt) ([]byte, error) {
-	data := new(bytes.Buffer)
-
-	// Write peer ID (variable length string)
-	_, _ = data.Write([]byte{0}) // null terminator
-
-	// Write owner
-	_, _ = data.Write([]byte(r.Ref.Owner))
-	_, _ = data.Write([]byte{0}) // null terminator
-
-	// Write blob ID
-	_, _ = data.Write([]byte(r.Ref.BlobID))
-	_, _ = data.Write([]byte{0}) // null terminator
-
-	// Write index
-	var idx [4]byte
-	binary.BigEndian.PutUint32(idx[:], uint32(r.Ref.Index))
-	_, _ = data.Write(idx[:])
-
-	// Write hash
-	_, _ = data.Write([]byte(r.Hash))
-	_, _ = data.Write([]byte{0}) // null terminator
-
-	// Write signature
-	_, _ = data.Write([]byte(r.Signature))
-	_, _ = data.Write([]byte{0}) // null terminator
-
-	return data.Bytes(), nil
+	return json.Marshal(r)
 }
 
 // unmarshalReceipt decodes bytes to a receipt.
 func unmarshalReceipt(data []byte, r *receipts.Receipt) error {
-	// Decode peer ID
-	signerEnd := bytes.IndexByte(data, 0)
-	if signerEnd == -1 {
-		return errors.New("data too short for peer ID")
-	}
-	data = data[signerEnd+1:]
-
-	// Decode owner and blob ID (until null byte)
-	r.Ref.Owner = string(data[:bytes.IndexByte(data, 0)])
-	data = data[bytes.IndexByte(data, 0)+1:]
-	r.Ref.BlobID = string(data[:bytes.IndexByte(data, 0)])
-	data = data[bytes.IndexByte(data, 0)+1:]
-
-	// Decode index
-	r.Ref.Index = int(binary.BigEndian.Uint32(data[:4]))
-	data = data[4:]
-
-	// Decode hash
-	r.Hash = string(data[:bytes.IndexByte(data, 0)])
-	data = data[bytes.IndexByte(data, 0)+1:]
-
-	// Decode signature
-	r.Signature = string(data)
-
-	return nil
+	return json.Unmarshal(data, r)
 }
 
 // newChallengeHistoryRecord creates a new challenge history record.
@@ -282,68 +254,38 @@ func newChallengeHistoryRecord(peer string, key string, success bool, proof stri
 		return nil, errors.New("proof is required")
 	}
 	return &ChallengeHistoryRecord{
-		Peer:    peer,
-		Success: success,
-		Proof:   proof,
+		Peer:      peer,
+		Success:   success,
+		Proof:     proof,
 		Timestamp: time.Now().UTC(),
 	}, nil
 }
 
 // marshalChallengeHistoryRecord encodes a challenge history record.
 func marshalChallengeHistoryRecord(r *ChallengeHistoryRecord) ([]byte, error) {
-	data := new(bytes.Buffer)
-
-	// Write peer ID
-	_, _ = data.Write([]byte(r.Peer))
-	_, _ = data.Write([]byte{}) // null terminator
-
-	// Write success flag
-	_ = binary.Write(data, binary.BigEndian, uint8(0)) // Placeholder, success is part of the struct
-
-	// Write proof
-	_, _ = data.Write([]byte(r.Proof))
-	_, _ = data.Write([]byte{0}) // null terminator
-
-	// Write timestamp
-	timestamp := r.Timestamp.UnixNano()
-	var nanos [8]byte
-	binary.BigEndian.PutUint64(nanos[:], uint64(timestamp))
-	_, _ = data.Write(nanos[:])
-
-	// Write nonce (optional)
-	_, _ = data.Write([]byte(r.Nonce))
-	_, _ = data.Write([]byte{}) // null terminator
-
-	return data.Bytes(), nil
+	return json.Marshal(r)
 }
 
 // unmarshalChallengeHistoryRecord decodes bytes to a challenge history record.
 func unmarshalChallengeHistoryRecord(data []byte, r *ChallengeHistoryRecord) error {
-	if len(data) < 1 {
-		return errors.New("data too short")
+	return json.Unmarshal(data, r)
+}
+
+func bytesHasPrefix(value, prefix []byte) bool {
+	if len(value) < len(prefix) {
+		return false
 	}
-
-	// Decode peer ID
-	r.Peer = string(data[:bytes.IndexByte(data, '\x00')])
-	data = data[bytes.IndexByte(data, '\x00')+1:]
-
-	// success is decoded as part of the ChallengeHistoryRecord struct
-	data = data[1:] // Advance past placeholder byte
-
-	// Decode proof
-	r.Proof = string(data[:bytes.IndexByte(data, 0)])
-	data = data[bytes.IndexByte(data, 0)+1:]
-
-	// Decode timestamp
-	timestamp := binary.BigEndian.Uint64(data[:8])
-	r.Timestamp = time.Unix(0, int64(timestamp))
-	data = data[8:]
-
-	// Decode nonce (optional)
-	nonceEnd := bytes.IndexByte(data, '\x00')
-	if nonceEnd > 0 {
-		r.Nonce = string(data[:nonceEnd])
+	for i := range prefix {
+		if value[i] != prefix[i] {
+			return false
+		}
 	}
+	return true
+}
 
-	return nil
+func ownerOrDefault(owner string) string {
+	if owner == "" {
+		return "_"
+	}
+	return owner
 }

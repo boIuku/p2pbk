@@ -3,11 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
-
-	"p2pbk/internal/config"
 )
 
 type statusOptions struct {
@@ -21,19 +19,14 @@ func newStatusCommand() *cobra.Command {
 		Use:   "status",
 		Short: "Show peer status and storage usage",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg := config.FromViper(viper.GetViper())
+			cfg := currentConfig()
 
 			paths, err := cfg.Paths()
 			if err != nil {
 				return err
 			}
 
-			var storeDir int64
-			if file, err := os.Open(paths.StoreDir); err == nil {
-				stats, _ := file.Stat()
-				storeDir = stats.Size()
-				file.Close()
-			}
+			storeDir := dirSize(paths.StoreDir)
 
 			fmt.Printf("p2pbk Status\n")
 			fmt.Println("============")
@@ -57,4 +50,19 @@ func newStatusCommand() *cobra.Command {
 
 	cmd.Flags().BoolVar(&opts.long, "long", false, "show detailed status")
 	return cmd
+}
+
+func dirSize(root string) int64 {
+	var total int64
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
 }

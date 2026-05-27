@@ -17,17 +17,17 @@ type Event struct {
 }
 
 type Tracker struct {
-	mu       sync.Mutex
-	window   time.Duration
-	events   map[string][]Event // key: owner|blobID|index|nonce
+	mu     sync.Mutex
+	window time.Duration
+	events map[string][]Event
 }
 
 type Score struct {
-	Peer       string
-	Successes  int
-	Failures    int
-	Score      float64
-	Challenge  string
+	Peer      string
+	Successes int
+	Failures  int
+	Score     float64
+	Challenge string
 }
 
 func New(window time.Duration) *Tracker {
@@ -44,18 +44,17 @@ func (t *Tracker) Record(peer, owner, blobID string, index uint32, success bool,
 		at = time.Now().UTC()
 	}
 
-	key := key(owner, blobID, index, nonce)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	t.events[key] = append(t.events[key], Event{
-		Peer:    peer,
-		Success: success,
-		Ref:     blobserver.ShardRef{Owner: owner, BlobID: blobID, Index: int(index)},
+	t.events[peer] = append(t.events[peer], Event{
+		Peer:      peer,
+		Success:   success,
+		Ref:       blobserver.ShardRef{Owner: owner, BlobID: blobID, Index: int(index)},
 		Challenge: nonce,
-		At:      at.UTC(),
+		At:        at.UTC(),
 	})
-	t.pruneLocked(key, at.UTC())
+	t.pruneLocked(peer, at.UTC())
 }
 
 // RecordSuccess records a successful challenge response.
@@ -68,34 +67,8 @@ func (t *Tracker) RecordFailure(peer, owner, blobID string, index uint32, nonce 
 	t.Record(peer, owner, blobID, index, false, nonce, at)
 }
 
-// Score returns the score for a peer.
-func (t *Tracker) Score(key string, now time.Time) Score {
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.pruneLocked(key, now.UTC())
-
-	score := Score{}
-	for _, event := range t.events[key] {
-		if event.Success {
-			score.Successes++
-			score.Peer = event.Peer
-			score.Challenge = event.Challenge
-		} else {
-			score.Failures++
-		}
-	}
-
-	total := score.Successes + score.Failures
-	if total == 0 {
-		score.Score = 0.5
-		return score
-	}
-	score.Score = float64(score.Successes) / float64(total)
-	return score
+func (t *Tracker) Score(peer string, now time.Time) Score {
+	return t.ScoreForPeer(peer, now)
 }
 
 // ScoreForPeer returns the score for a specific peer across all their challenges.
@@ -112,7 +85,6 @@ func (t *Tracker) ScoreForPeer(peer string, now time.Time) Score {
 	for _, event := range t.events[peer] {
 		if event.Success {
 			score.Successes++
-			score.Peer = event.Peer
 			score.Challenge = event.Challenge
 		} else {
 			score.Failures++
@@ -136,14 +108,14 @@ func (t *Tracker) Ranked(now time.Time) []Score {
 
 	t.mu.Lock()
 	peers := make([]string, 0, len(t.events))
-	for key := range t.events {
-		peers = append(peers, key)
+	for peer := range t.events {
+		peers = append(peers, peer)
 	}
 	t.mu.Unlock()
 
 	out := make([]Score, 0, len(peers))
-	for _, key := range peers {
-		out = append(out, t.Score(key, now))
+	for _, peer := range peers {
+		out = append(out, t.ScoreForPeer(peer, now))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Score == out[j].Score {
@@ -168,9 +140,4 @@ func (t *Tracker) pruneLocked(key string, now time.Time) {
 		return
 	}
 	t.events[key] = kept
-}
-
-// key creates a unique key for a challenge.
-func key(owner, blobID string, index uint32, nonce string) string {
-	return owner + "|" + blobID + "|" + string(rune(index)) + "|" + nonce
 }

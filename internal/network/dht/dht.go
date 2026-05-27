@@ -53,6 +53,21 @@ func (d *DHT) FindPeer(ctx context.Context, id peer.ID) (peer.AddrInfo, error) {
 	return info, nil
 }
 
+func (d *DHT) PutValue(ctx context.Context, key string, value []byte) error {
+	if err := d.inner.PutValue(ctx, key, value); err != nil {
+		return fmt.Errorf("put dht value %q: %w", key, err)
+	}
+	return nil
+}
+
+func (d *DHT) GetValue(ctx context.Context, key string) ([]byte, error) {
+	value, err := d.inner.GetValue(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("get dht value %q: %w", key, err)
+	}
+	return value, nil
+}
+
 func (d *DHT) Close() error {
 	return d.inner.Close()
 }

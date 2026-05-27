@@ -130,6 +130,8 @@ backup:
 trust:
   challenge_interval: %s
   reputation_window: %s
+  challenge_max_length: %d
+  identity_passphrase: ""
 `,
 		cfg.Node.DataDir,
 		cfg.Node.Identity,
@@ -144,6 +146,7 @@ trust:
 		cfg.Backup.ParityShards,
 		cfg.Trust.ChallengeInterval,
 		cfg.Trust.ReputationWindow,
+		cfg.Trust.ChallengeMaxLength,
 	)
 	return os.WriteFile(path, []byte(content), 0o600)
 }

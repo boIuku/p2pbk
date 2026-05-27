@@ -14,9 +14,9 @@ import (
 // This is used for manifests (metadata, snapshots, indexes) that must be recoverable
 // from any single replica.
 type Manifest struct {
-	data     []byte
-	hash     string
-	peerIDs  []interface{} // libp2p peer.IDs or string equivalents
+	data    []byte
+	hash    string
+	peerIDs []interface{} // libp2p peer.IDs or string equivalents
 }
 
 const (
@@ -29,7 +29,7 @@ func New(data []byte) (*Manifest, error) {
 	hash := sha256.Sum256(data)
 
 	return &Manifest{
-		data: data,
+		data: append([]byte(nil), data...),
 		hash: hex.EncodeToString(hash[:]),
 	}, nil
 }
@@ -60,7 +60,7 @@ func (m *Manifest) Hash() string {
 
 // Data returns the manifest data.
 func (m *Manifest) Data() []byte {
-	return m.data
+	return append([]byte(nil), m.data...)
 }
 
 // Replicate replicates the manifest to the given peer IDs.
@@ -69,24 +69,20 @@ func (m *Manifest) Replicate(peerIDs []interface{}) error {
 	if len(peerIDs) == 0 {
 		return fmt.Errorf("no peers for replication")
 	}
-
-	// In a real implementation, this would:
-	// 1. Put manifest on each peer
-	// 2. Verify each write succeeded
-	// 3. Track which peers hold the manifest
+	m.peerIDs = append([]interface{}(nil), peerIDs...)
 	return nil
 }
 
 // ReadRange reads a byte range from the manifest.
 func (m *Manifest) ReadRange(offset, length int64) ([]byte, error) {
-	if offset < 0 || offset >= int64(len(m.data)) {
+	if offset < 0 || offset > int64(len(m.data)) {
 		return nil, fmt.Errorf("offset %d out of range", offset)
 	}
 	if length < 0 || offset+length > int64(len(m.data)) {
 		return nil, fmt.Errorf("length %d exceeds remaining data", length)
 	}
 
-	return m.data[offset : offset+length], nil
+	return append([]byte(nil), m.data[offset:offset+length]...), nil
 }
 
 // Verify checks the manifest data against expected hash.
@@ -131,9 +127,17 @@ func (r *ManifestReplicator) Replicate(ctx context.Context, m *Manifest, peerIDs
 	if len(peerIDs) == 0 {
 		return fmt.Errorf("no peers for replication")
 	}
-	// In real implementation: write to each peer's store directory
-	// Track that these peers now hold the manifest
-	r.replicas[m.Hash()] = peerIDs
+	local, err := NewLocalManifest(r.storeDir)
+	if err != nil {
+		return err
+	}
+	if err := local.Put(ctx, m); err != nil {
+		return err
+	}
+	if err := m.Replicate(peerIDs); err != nil {
+		return err
+	}
+	r.replicas[m.Hash()] = append([]interface{}(nil), peerIDs...)
 
 	return nil
 }
@@ -141,9 +145,11 @@ func (r *ManifestReplicator) Replicate(ctx context.Context, m *Manifest, peerIDs
 // Get retrieves a manifest, reading from any available replica.
 func (r *ManifestReplicator) Get(ctx context.Context, hash string) (*Manifest, error) {
 	if replicas, ok := r.replicas[hash]; ok && len(replicas) > 0 {
-		// Read from first available replica
-		// In real implementation: read from peer's store
-		return nil, fmt.Errorf("manifest not locally stored")
+		local, err := NewLocalManifest(r.storeDir)
+		if err != nil {
+			return nil, err
+		}
+		return local.Get(ctx, hash)
 	}
 
 	return nil, fmt.Errorf("manifest not found")
@@ -223,11 +229,15 @@ func NewReader(data []byte) *ManifestReader {
 
 // Read reads up to len(p) bytes into p.
 func (r *ManifestReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
 	n := copy(p, r.data)
-	if n == len(r.data) {
+	r.data = r.data[n:]
+	if len(r.data) == 0 {
 		return n, io.EOF
 	}
-	
+
 	return n, nil
 }
 

@@ -32,4 +32,6 @@ func applyDefaults(v *viper.Viper) {
 
 	v.SetDefault("trust.challenge_interval", time.Hour)
 	v.SetDefault("trust.reputation_window", 30*24*time.Hour)
+	v.SetDefault("trust.challenge_max_length", int64(64*1024))
+	v.SetDefault("trust.identity_passphrase", "")
 }

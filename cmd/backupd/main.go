@@ -1,5 +1,3 @@
-//go:build ignore
-
 package main
 
 import (
@@ -8,20 +6,17 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sync"
 	"syscall"
 	"time"
 
-	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/p2p/host/autonat"
-	dht "github.com/libp2p/go-libp2p/p2p/host/autodht"
-	"github.com/libp2p/go-libp2p/p2p/muxer/yamux"
-	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
-	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
-	"github.com/libp2p/go-libp2p/p2p/transport/quic"
-	"github.com/multiformats/go-multiaddr/net"
+	"p2pbk/internal/config"
+	p2phost "p2pbk/internal/network/host"
+	"p2pbk/internal/network/wire"
+	"p2pbk/internal/peer/blobserver"
+	"p2pbk/internal/peer/localdb"
+	"p2pbk/internal/peer/quota"
+	"p2pbk/internal/peer/responder"
+	"p2pbk/internal/trust/reputation"
 )
 
 func main() {
@@ -32,84 +27,55 @@ func main() {
 }
 
 func run(args []string) error {
-	configPath := args[1]
-	if configPath == "" {
-		configPath = "config.yaml"
+	configPath := ""
+	if len(args) > 0 {
+		configPath = args[0]
 	}
-
-	cfg, err := loadConfig(configPath)
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-
 	paths, err := cfg.Paths()
 	if err != nil {
 		return err
 	}
 
-	id, err := loadIdentity(paths.Identity, cfg.Trust.IdentityPassphrase)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	host, err := p2phost.New(ctx, p2phost.Options{ListenAddrs: cfg.Network.ListenAddrs})
 	if err != nil {
-		return fmt.Errorf("load identity: %w", err)
+		return err
 	}
+	defer host.Close()
 
-	h, err := newHost(cfg, id.ID())
+	db, err := localdb.Open(paths.LocalDB)
 	if err != nil {
-		return fmt.Errorf("create host: %w", err)
+		return err
+	}
+	defer db.Close()
+
+	q, err := quota.New(cfg.Storage.OfferBytes)
+	if err != nil {
+		return err
+	}
+	blobServer, err := blobserver.NewWithQuota(paths.StoreDir, q)
+	if err != nil {
+		return err
 	}
 
-	// Setup NAT
-	nat, _ := autonat.New(h.Peerstore(), dht.ModeServer, dht.ModeClient)
-	h.Peerstore().AddAddrs(nat.PeerID(), nat.Multiaddrs(), peer.TempAddrTTL)
+	router := wire.NewRouter()
+	blobServer.Register(router)
+	reputationWindow, _ := time.ParseDuration(cfg.Trust.ReputationWindow)
+	responder.New(blobServer, db, reputation.New(reputationWindow), responder.WithPeerID(host.ID())).Register(router)
+	router.Register(host)
 
-	// Listen
-	for _, addr := range h.Addrs() {
-		if net.IsPublicAddr(addr) {
-			h.Host().Listen(addrs)
-		}
+	fmt.Printf("backupd peer: %s\n", host.ID())
+	for _, addr := range host.Addrs() {
+		fmt.Printf("listening: %s/p2p/%s\n", addr, host.ID())
 	}
-
-	fmt.Printf("listening on %s\n", h.Addrs())
-
-	// Connect to bootstrap peers
-	for _, bsPeer := range cfg.Network.BootstrapPeers {
-		h.Connect(context.Background(), peer.AddrInfo{
-			ID:    peer.ID(bsPeer),
-			Addrs: []multiaddr.Multiaddr{parseMultiaddr(bsPeer)},
-		})
-	}
-
-	// Setup signal handling
-	sigChan := make(chan os.Signal, 1)
-	go func() {
-		<-sigChan
-		fmt.Println("shutdown signal received")
-	}()
+	fmt.Printf("store: %s\n", filepath.Clean(paths.StoreDir))
 
 	<-ctx.Done()
-
 	return nil
-}
-
-func loadConfig(path string) (*config.Config, error) {
-	v := viper.New()
-	v.SetConfigFile(path)
-	if err := v.ReadInConfig(); err != nil {
-		return nil, err
-	}
-	return config.FromViper(v), nil
-}
-
-func loadIdentity(path, passphrase string) (identity.Identity, error) {
-	data, _ := os.ReadFile(path)
-	return nil, nil
-}
-
-func newHost(cfg *config.Config, id peer.ID) (*host.Host, error) {
-	// Placeholder - just return a new host
-	return nil, nil
-}
-
-func parseMultiaddr(s string) multiaddr.Multiaddr {
-	addr, _ := multiaddr.NewMultiaddr(s)
-	return addr
 }

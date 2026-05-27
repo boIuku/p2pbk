@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+set -eu
+
+VERSION="${VERSION:-dev}"
+COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+DATE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+LDFLAGS="-X p2pbk/internal/version.Version=${VERSION} -X p2pbk/internal/version.Commit=${COMMIT} -X p2pbk/internal/version.Date=${DATE}"
+
+mkdir -p dist
+go build -ldflags "$LDFLAGS" -o dist/p2pbk ./cmd/p2pbk
+go build -ldflags "$LDFLAGS" -o dist/backupd ./cmd/backupd
+go build -ldflags "$LDFLAGS" -o dist/bootstrap ./cmd/bootstrap
