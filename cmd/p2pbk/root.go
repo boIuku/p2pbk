@@ -10,6 +10,8 @@ import (
 	"p2pbk/internal/version"
 )
 
+var activeConfigPath string
+
 func newRootCommand() *cobra.Command {
 	var configPath string
 
@@ -22,6 +24,7 @@ func newRootCommand() *cobra.Command {
 				if err := viper.ReadInConfig(); err != nil {
 					return fmt.Errorf("read config: %w", err)
 				}
+				activeConfigPath = configPath
 			}
 			return nil
 		},
@@ -35,6 +38,8 @@ func newRootCommand() *cobra.Command {
 	cmd.AddCommand(newAddCommand())
 	cmd.AddCommand(newBackupCommand())
 	cmd.AddCommand(newRestoreCommand())
+	cmd.AddCommand(newRepoCommand())
+	cmd.AddCommand(newSnapshotCommand())
 
 	cmd.AddCommand(&cobra.Command{
 		Use:   "version",
@@ -48,11 +53,18 @@ func newRootCommand() *cobra.Command {
 }
 
 func currentConfig() config.Config {
-	if viper.ConfigFileUsed() != "" {
-		cfg, err := config.Load(viper.ConfigFileUsed())
+	if configFileUsed() != "" {
+		cfg, err := config.Load(configFileUsed())
 		if err == nil {
 			return cfg
 		}
 	}
 	return config.Default()
+}
+
+func configFileUsed() string {
+	if activeConfigPath != "" {
+		return activeConfigPath
+	}
+	return viper.ConfigFileUsed()
 }

@@ -94,7 +94,7 @@ func (b *DistributedBackend) DeleteShard(ctx context.Context, req blobserver.Del
 func (b *DistributedBackend) recordLocation(ctx context.Context, blobID string, location locator.Location) error {
 	locations, err := b.locator.Get(ctx, blobID)
 	if err != nil {
-		return err
+		locations = nil
 	}
 	locations = upsertLocation(locations, location)
 	return b.locator.Put(ctx, blobID, locations)

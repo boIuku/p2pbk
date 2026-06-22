@@ -2,7 +2,10 @@ package dht
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
 	kaddht "github.com/libp2p/go-libp2p-kad-dht"
 	corehost "github.com/libp2p/go-libp2p/core/host"
@@ -21,7 +24,10 @@ type DHT struct {
 }
 
 func New(ctx context.Context, h corehost.Host, mode Mode) (*DHT, error) {
-	options := []kaddht.Option{}
+	options := []kaddht.Option{
+		kaddht.ProtocolPrefix("/p2pbk"),
+		kaddht.NamespacedValidator("p2pbk", p2pbkValidator{}),
+	}
 	switch mode {
 	case "", ModeClient:
 		options = append(options, kaddht.Mode(kaddht.ModeClient))
@@ -36,6 +42,41 @@ func New(ctx context.Context, h corehost.Host, mode Mode) (*DHT, error) {
 		return nil, fmt.Errorf("create dht: %w", err)
 	}
 	return &DHT{inner: inner}, nil
+}
+
+type p2pbkValidator struct{}
+
+func (p2pbkValidator) Validate(key string, value []byte) error {
+	if key == "" {
+		return errors.New("dht key is required")
+	}
+	if len(value) == 0 {
+		return errors.New("dht value is required")
+	}
+	return nil
+}
+
+func (p2pbkValidator) Select(key string, values [][]byte) (int, error) {
+	if len(values) == 0 {
+		return 0, errors.New("cannot select from no dht values")
+	}
+	best := 0
+	for i := 1; i < len(values); i++ {
+		if dhtRecordTime(values[i]).After(dhtRecordTime(values[best])) {
+			best = i
+		}
+	}
+	return best, nil
+}
+
+func dhtRecordTime(value []byte) time.Time {
+	var record struct {
+		IssuedAt time.Time `json:"issued_at"`
+	}
+	if err := json.Unmarshal(value, &record); err != nil {
+		return time.Time{}
+	}
+	return record.IssuedAt
 }
 
 func (d *DHT) Bootstrap(ctx context.Context) error {

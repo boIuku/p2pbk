@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -16,20 +17,20 @@ func newBackupCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "backup <source> <target>",
-		Short: "Backup data from source to p2pbk",
+		Short: "Backup data from source to a Kopia repository on p2pbk storage",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) < 2 {
 				return fmt.Errorf("usage: p2pbk backup <source> <target>")
 			}
-			repo, err := openLocalRepository(currentConfig())
+			engine, err := openKopiaEngine()
 			if err != nil {
 				return err
 			}
-			idx, err := repo.Backup(args[0], args[1])
+			result, err := engine.Backup(context.Background(), args[0], args[1])
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "backed up %d file(s) as %s\n", len(idx.Entries), idx.Name)
+			fmt.Fprintf(cmd.OutOrStdout(), "snapshot %s saved for %s\n", result.ManifestID, result.Source)
 			return nil
 		},
 	}

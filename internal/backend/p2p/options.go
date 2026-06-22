@@ -5,6 +5,7 @@ type Options struct {
 	DataShards   int
 	ParityShards int
 	DisplayName  string
+	ManifestPath string
 }
 
 func (o Options) withDefaults() Options {

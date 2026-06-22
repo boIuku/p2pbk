@@ -126,6 +126,42 @@ func TestStorageRecoversWithMissingParityShard(t *testing.T) {
 	}
 }
 
+func TestStoragePersistsManifestIndex(t *testing.T) {
+	backend := newMemoryShardBackend()
+	manifestPath := t.TempDir() + "/manifests.json"
+
+	st, err := NewStorage(backend, Options{
+		Owner:        "owner",
+		DataShards:   2,
+		ParityShards: 1,
+		ManifestPath: manifestPath,
+	})
+	if err != nil {
+		t.Fatalf("NewStorage returned error: %v", err)
+	}
+	if err := st.PutBlob(context.Background(), "blob-1", testBytes("persistent manifest"), blob.PutOptions{}); err != nil {
+		t.Fatalf("PutBlob returned error: %v", err)
+	}
+
+	reopened, err := NewStorage(backend, Options{
+		Owner:        "owner",
+		DataShards:   2,
+		ParityShards: 1,
+		ManifestPath: manifestPath,
+	})
+	if err != nil {
+		t.Fatalf("reopen NewStorage returned error: %v", err)
+	}
+
+	var out testOutput
+	if err := reopened.GetBlob(context.Background(), "blob-1", 0, -1, &out); err != nil {
+		t.Fatalf("GetBlob returned error after reopen: %v", err)
+	}
+	if string(out.bytes) != "persistent manifest" {
+		t.Fatalf("output = %q, want persistent manifest", out.bytes)
+	}
+}
+
 func newTestStorage(t *testing.T) *Storage {
 	t.Helper()
 

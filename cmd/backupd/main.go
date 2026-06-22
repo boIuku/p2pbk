@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"p2pbk/internal/config"
+	p2pdht "p2pbk/internal/network/dht"
 	p2phost "p2pbk/internal/network/host"
 	"p2pbk/internal/network/wire"
 	"p2pbk/internal/peer/blobserver"
@@ -49,6 +50,20 @@ func run(args []string) error {
 	}
 	defer host.Close()
 
+	connected, err := p2phost.ConnectAddrs(ctx, host, cfg.Network.BootstrapPeers)
+	if err != nil {
+		return err
+	}
+
+	dht, err := p2pdht.New(ctx, host, p2pdht.ModeServer)
+	if err != nil {
+		return err
+	}
+	defer dht.Close()
+	if err := dht.Bootstrap(ctx); err != nil {
+		return err
+	}
+
 	db, err := localdb.Open(paths.LocalDB)
 	if err != nil {
 		return err
@@ -73,6 +88,9 @@ func run(args []string) error {
 	fmt.Printf("backupd peer: %s\n", host.ID())
 	for _, addr := range host.Addrs() {
 		fmt.Printf("listening: %s/p2p/%s\n", addr, host.ID())
+	}
+	for _, peer := range connected {
+		fmt.Printf("connected bootstrap: %s\n", peer.ID)
 	}
 	fmt.Printf("store: %s\n", filepath.Clean(paths.StoreDir))
 

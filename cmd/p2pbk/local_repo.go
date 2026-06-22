@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/kopia/kopia/repo/blob"
 
 	"p2pbk/internal/config"
 )
@@ -29,7 +33,8 @@ type backupFile struct {
 }
 
 type localRepository struct {
-	root string
+	root    string
+	storage blob.Storage
 }
 
 func openLocalRepository(cfg config.Config) (localRepository, error) {
@@ -45,6 +50,15 @@ func openLocalRepository(cfg config.Config) (localRepository, error) {
 		return localRepository{}, err
 	}
 	return localRepository{root: root}, nil
+}
+
+func openStorageRepository(cfg config.Config, storage blob.Storage) (localRepository, error) {
+	repo, err := openLocalRepository(cfg)
+	if err != nil {
+		return localRepository{}, err
+	}
+	repo.storage = storage
+	return repo, nil
 }
 
 func (r localRepository) Backup(source, name string) (backupIndex, error) {
@@ -105,19 +119,25 @@ func (r localRepository) Restore(name, target string) (backupIndex, error) {
 			return backupIndex{}, err
 		}
 		src := r.objectPath(entry.Hash)
-		in, err := os.Open(src)
-		if err != nil {
-			return backupIndex{}, err
-		}
 		out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(entry.Mode))
 		if err != nil {
-			_ = in.Close()
 			return backupIndex{}, err
 		}
-		_, copyErr := io.Copy(out, in)
-		closeErr := errorsJoin(out.Close(), in.Close())
-		if copyErr != nil {
-			return backupIndex{}, copyErr
+		var restoreErr error
+		if r.storage != nil {
+			restoreErr = r.storage.GetBlob(context.Background(), blob.ID(entry.Hash), 0, -1, blobOutput{Writer: out})
+		} else {
+			in, err := os.Open(src)
+			if err != nil {
+				_ = out.Close()
+				return backupIndex{}, err
+			}
+			_, restoreErr = io.Copy(out, in)
+			restoreErr = errorsJoin(restoreErr, in.Close())
+		}
+		closeErr := out.Close()
+		if restoreErr != nil {
+			return backupIndex{}, restoreErr
 		}
 		if closeErr != nil {
 			return backupIndex{}, closeErr
@@ -152,6 +172,17 @@ func (r localRepository) storeFile(path, rel string) (backupFile, error) {
 		return backupFile{}, err
 	}
 	hash := hex.EncodeToString(h.Sum(nil))
+	if r.storage != nil {
+		data, err := os.ReadFile(tmpPath)
+		if err != nil {
+			_ = os.Remove(tmpPath)
+			return backupFile{}, err
+		}
+		if err := r.storage.PutBlob(context.Background(), blob.ID(hash), blobBytes(data), blob.PutOptions{}); err != nil {
+			_ = os.Remove(tmpPath)
+			return backupFile{}, err
+		}
+	}
 	objectPath := r.objectPath(hash)
 	if _, err := os.Stat(objectPath); os.IsNotExist(err) {
 		if err := os.Rename(tmpPath, objectPath); err != nil {
@@ -211,4 +242,37 @@ func errorsJoin(errs ...error) error {
 		}
 	}
 	return out
+}
+
+type blobBytes []byte
+
+func (b blobBytes) Length() int {
+	return len(b)
+}
+
+func (b blobBytes) Reader() io.ReadSeekCloser {
+	return nopReadSeekCloser{Reader: bytes.NewReader(b)}
+}
+
+func (b blobBytes) WriteTo(w io.Writer) (int64, error) {
+	n, err := w.Write(b)
+	return int64(n), err
+}
+
+type nopReadSeekCloser struct {
+	*bytes.Reader
+}
+
+func (nopReadSeekCloser) Close() error {
+	return nil
+}
+
+type blobOutput struct {
+	io.Writer
+}
+
+func (o blobOutput) Reset() {}
+
+func (o blobOutput) Length() int {
+	return 0
 }

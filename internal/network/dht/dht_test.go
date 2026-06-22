@@ -3,6 +3,7 @@ package dht
 import (
 	"context"
 	"testing"
+	"time"
 
 	p2phost "p2pbk/internal/network/host"
 )
@@ -37,4 +38,28 @@ func TestNewCreatesClientDHT(t *testing.T) {
 		t.Fatalf("New returned error: %v", err)
 	}
 	defer d.Close()
+}
+
+func TestP2PBKValidator(t *testing.T) {
+	v := p2pbkValidator{}
+	if err := v.Validate("/p2pbk/locator/blob", []byte("record")); err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+	if err := v.Validate("/p2pbk/locator/blob", nil); err == nil {
+		t.Fatal("Validate returned nil error for empty value")
+	}
+
+	older := []byte(`{"issued_at":"2026-06-23T10:00:00Z","locations":[1,2,3]}`)
+	newer := []byte(`{"issued_at":"2026-06-23T10:00:01Z","locations":[]}`)
+	best, err := v.Select("/p2pbk/locator/blob", [][]byte{older, newer})
+	if err != nil {
+		t.Fatalf("Select returned error: %v", err)
+	}
+	if best != 1 {
+		t.Fatalf("best = %d, want 1", best)
+	}
+
+	if got := dhtRecordTime(newer); !got.Equal(time.Date(2026, 6, 23, 10, 0, 1, 0, time.UTC)) {
+		t.Fatalf("dhtRecordTime = %v", got)
+	}
 }

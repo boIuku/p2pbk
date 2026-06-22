@@ -18,7 +18,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
     command: ["/etc/p2pbk/config.yaml"]
-    volumes:
+    volumes: 
       - ./node2.yaml:/etc/p2pbk/config.yaml:ro
   node3:
     build:

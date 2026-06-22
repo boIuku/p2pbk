@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -15,21 +16,21 @@ func newRestoreCommand() *cobra.Command {
 	opts := restoreOptions{}
 
 	cmd := &cobra.Command{
-		Use:   "restore <source> <target>",
-		Short: "Restore data from p2pbk to target",
+		Use:   "restore <snapshot-id|latest> <target>",
+		Short: "Restore a Kopia snapshot from p2pbk storage",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) < 2 {
-				return fmt.Errorf("usage: p2pbk restore <source> <target>")
+				return fmt.Errorf("usage: p2pbk restore <snapshot-id|latest> <target>")
 			}
-			repo, err := openLocalRepository(currentConfig())
+			engine, err := openKopiaEngine()
 			if err != nil {
 				return err
 			}
-			idx, err := repo.Restore(args[0], args[1])
+			result, err := engine.Restore(context.Background(), args[0], args[1])
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "restored %d file(s) from %s\n", len(idx.Entries), idx.Name)
+			fmt.Fprintf(cmd.OutOrStdout(), "restored snapshot %s: %d file(s), %d dir(s)\n", result.ManifestID, result.Stats.RestoredFileCount, result.Stats.RestoredDirCount)
 			return nil
 		},
 	}

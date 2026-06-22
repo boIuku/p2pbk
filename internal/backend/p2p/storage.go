@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -50,12 +53,16 @@ func NewStorage(backend ShardBackend, options Options) (*Storage, error) {
 		return nil, err
 	}
 
-	return &Storage{
+	s := &Storage{
 		options:   options,
 		codec:     codec,
 		backend:   backend,
 		manifests: map[blob.ID]storedManifest{},
-	}, nil
+	}
+	if err := s.loadManifests(); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 func (s *Storage) PutBlob(ctx context.Context, blobID blob.ID, data blob.Bytes, opts blob.PutOptions) error {
@@ -112,6 +119,9 @@ func (s *Storage) PutBlob(ctx context.Context, blobID blob.ID, data blob.Bytes, 
 	s.manifests[blobID] = storedManifest{
 		Metadata: blob.Metadata{BlobID: blobID, Length: int64(len(payload)), Timestamp: modTime},
 		Erasure:  manifest,
+	}
+	if err := s.saveManifestsLocked(); err != nil {
+		return err
 	}
 	if opts.GetModTime != nil {
 		*opts.GetModTime = modTime
@@ -207,6 +217,10 @@ func (s *Storage) DeleteBlob(ctx context.Context, blobID blob.ID) error {
 
 	s.mu.Lock()
 	delete(s.manifests, blobID)
+	if err := s.saveManifestsLocked(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	s.mu.Unlock()
 	return nil
 }
@@ -266,6 +280,65 @@ func readBlobBytes(data blob.Bytes) ([]byte, error) {
 		return nil, err
 	}
 	return out.Bytes(), nil
+}
+
+func (s *Storage) loadManifests() error {
+	if s.options.ManifestPath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(s.options.ManifestPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read manifest index: %w", err)
+	}
+
+	var raw map[string]storedManifest
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("decode manifest index: %w", err)
+	}
+	for id, manifest := range raw {
+		manifest.Metadata.BlobID = blob.ID(id)
+		s.manifests[blob.ID(id)] = manifest
+	}
+	return nil
+}
+
+func (s *Storage) saveManifestsLocked() error {
+	if s.options.ManifestPath == "" {
+		return nil
+	}
+	raw := make(map[string]storedManifest, len(s.manifests))
+	for id, manifest := range s.manifests {
+		raw[string(id)] = manifest
+	}
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode manifest index: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(s.options.ManifestPath), 0o700); err != nil {
+		return fmt.Errorf("create manifest directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(s.options.ManifestPath), "manifests-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create manifest temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("write manifest temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close manifest temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, s.options.ManifestPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("replace manifest index: %w", err)
+	}
+	return nil
 }
 
 var _ blob.Storage = (*Storage)(nil)
