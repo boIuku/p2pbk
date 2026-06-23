@@ -101,6 +101,40 @@ storage placement.
 Remote discovery can build on the same peer book later by adding signed
 rendezvous/DHT records as another peer source.
 
+## Scheduled Backups
+
+The daemon runs due backups for configured roots:
+
+```json
+{
+  "backup": {
+    "roots": ["/home/alice/Documents"],
+    "schedule": "daily",
+    "initial_full": true,
+    "incremental": true
+  }
+}
+```
+
+Supported schedule values include `hourly`, `daily`, `weekly`, or a Go duration
+such as `6h`. Use `manual` or `off` to disable daemon scheduling.
+
+The daemon must have the repository password in its environment:
+
+```bash
+P2PBK_REPOSITORY_PASSWORD=... p2pbk --config /etc/p2pbk/config.json daemon
+```
+
+For distributed storage, it also needs access to the node identity passphrase:
+
+```bash
+P2PBK_IDENTITY_PASSPHRASE=...
+```
+
+Kopia handles incremental behavior. Each scheduled backup creates a restorable
+snapshot of the full source tree, while Kopia uploads only new/changed content
+thanks to content-addressing and deduplication.
+
 ## Docker
 
 Docker uses the same binary and command surface:

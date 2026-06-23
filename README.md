@@ -55,6 +55,13 @@ Nodes discover peers from configured bootstrap addresses, saved peers in
 `local.db`, and local LAN mDNS when enabled. Remote discovery/rendezvous can
 reuse the same saved peer book later.
 
+When `p2pbk daemon` is running, it checks configured backup roots according to
+`backup.schedule` and runs due backups automatically. Set
+`P2PBK_REPOSITORY_PASSWORD` in the daemon environment so scheduled backups can
+open/create the Kopia repository. Kopia snapshots are logical full snapshots,
+but storage is incremental/deduplicated: unchanged content is not uploaded
+again.
+
 The background peer is an implementation detail exposed as a hidden/advanced
 subcommand for containers and operators:
 

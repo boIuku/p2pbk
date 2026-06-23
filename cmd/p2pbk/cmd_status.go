@@ -10,6 +10,7 @@ import (
 
 	"p2pbk/internal/kopiaengine"
 	"p2pbk/internal/peer/localdb"
+	"p2pbk/internal/scheduler"
 )
 
 type statusOptions struct {
@@ -62,6 +63,14 @@ func newStatusCommand() *cobra.Command {
 				fmt.Printf("Repository: not initialized; run `p2pbk repo init` or `p2pbk backup now`\n")
 			}
 			if db, err := localdb.Open(paths.LocalDB); err == nil {
+				for _, root := range cfg.Backup.Roots {
+					if value, err := db.GetSetting(scheduler.LastSuccessKey(root)); err == nil && len(value) > 0 {
+						fmt.Printf("Last scheduled backup for %s: %s\n", root, string(value))
+					}
+					if value, err := db.GetSetting(scheduler.LastFailureKey(root)); err == nil && len(value) > 0 {
+						fmt.Printf("Last scheduled backup failure for %s: %s\n", root, string(value))
+					}
+				}
 				if peers, err := db.ListPeers(); err == nil {
 					fmt.Printf("Known peers: %d\n", len(peers))
 					if opts.long {

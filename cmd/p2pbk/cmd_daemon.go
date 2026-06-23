@@ -17,6 +17,7 @@ import (
 	"p2pbk/internal/peer/localdb"
 	"p2pbk/internal/peer/quota"
 	"p2pbk/internal/peer/responder"
+	"p2pbk/internal/scheduler"
 	"p2pbk/internal/trust/reputation"
 )
 
@@ -103,6 +104,12 @@ func runDaemon(ctx context.Context, cfg config.Config, out interface{ Write([]by
 		return err
 	}
 	fmt.Fprintf(out, "store: %s\n", filepath.Clean(paths.StoreDir))
+	scheduler.Start(ctx, scheduler.Options{
+		Config:     cfg,
+		ConfigPath: currentConfigPath(cfg),
+		DB:         db,
+		Output:     out,
+	})
 
 	<-ctx.Done()
 	return nil

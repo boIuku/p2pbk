@@ -52,6 +52,37 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestOpenReusesHandleInProcess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "local.db")
+	db1, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open returned error: %v", err)
+	}
+	db2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open returned error: %v", err)
+	}
+	if err := db1.PutSetting("shared", []byte("ok")); err != nil {
+		t.Fatalf("PutSetting returned error: %v", err)
+	}
+	got, err := db2.GetSetting("shared")
+	if err != nil {
+		t.Fatalf("GetSetting returned error: %v", err)
+	}
+	if string(got) != "ok" {
+		t.Fatalf("setting = %q, want ok", got)
+	}
+	if err := db1.Close(); err != nil {
+		t.Fatalf("first Close returned error: %v", err)
+	}
+	if err := db2.PutSetting("after_first_close", []byte("ok")); err != nil {
+		t.Fatalf("PutSetting after first close returned error: %v", err)
+	}
+	if err := db2.Close(); err != nil {
+		t.Fatalf("second Close returned error: %v", err)
+	}
+}
+
 func TestReceiptsRoundTripAndList(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "local.db"))
 	if err != nil {
