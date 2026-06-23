@@ -4,10 +4,10 @@ p2pbk is an experimental peer-to-peer backup system. Its core goal is to expose 
 
 The project is intentionally split into small layers:
 
-- `cmd/` contains binaries: the long-running daemon, user CLI, and bootstrap node.
-- `internal/backend/p2p/` will implement Kopia-compatible blob storage.
-- `internal/trust/` will hold identity, receipts, challenges, and reputation.
-- `internal/network/` will hold libp2p host, DHT, and wire protocol code.
+- `cmd/p2pbk/` contains the single user-facing product binary.
+- `internal/backend/p2p/` implements Kopia-compatible distributed blob storage.
+- `internal/trust/` holds identity, challenges, and reputation.
+- `internal/network/` holds libp2p host, DHT, local discovery, and JSON wire protocol code.
 - `internal/peer/` will hold services this node offers to other peers.
 - `internal/config/` is the single source of truth for user-tunable settings.
 
