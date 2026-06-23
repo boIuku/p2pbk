@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -63,6 +64,14 @@ func newStatusCommand() *cobra.Command {
 			if db, err := localdb.Open(paths.LocalDB); err == nil {
 				if peers, err := db.ListPeers(); err == nil {
 					fmt.Printf("Known peers: %d\n", len(peers))
+					if opts.long {
+						for _, peer := range peers {
+							fmt.Printf("  - %s source=%s failures=%d last_seen=%s\n", peer.ID, peer.Source, peer.Failures, peer.LastSeen.Format("2006-01-02T15:04:05Z07:00"))
+							if len(peer.Addrs) > 0 {
+								fmt.Printf("    addrs: %s\n", strings.Join(peer.Addrs, ", "))
+							}
+						}
+					}
 				}
 				_ = db.Close()
 			}
@@ -71,7 +80,6 @@ func newStatusCommand() *cobra.Command {
 			if opts.long {
 				fmt.Println("Detailed Status (long mode):")
 				fmt.Println("------------------------------")
-				// Show settings from localdb if available
 			}
 
 			return nil

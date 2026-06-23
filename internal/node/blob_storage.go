@@ -20,7 +20,11 @@ type BlobStorage struct {
 }
 
 func OpenBlobStorage(ctx context.Context, cfg config.Config, id *identity.Identity) (*BlobStorage, error) {
-	if len(cfg.Network.BootstrapPeers) == 0 {
+	useDistributed, err := ShouldUseDistributedStorage(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if !useDistributed {
 		st, err := openLocalBlobStorage(cfg)
 		if err != nil {
 			return nil, err
@@ -43,6 +47,22 @@ func OpenBlobStorage(ctx context.Context, cfg config.Config, id *identity.Identi
 			return errorsJoin(distributed.Close(ctx), h.Close())
 		},
 	}, nil
+}
+
+func ShouldUseDistributedStorage(cfg config.Config) (bool, error) {
+	if len(cfg.Network.BootstrapPeers) > 0 {
+		return true, nil
+	}
+	store, closeStore, err := openPeerStore(cfg)
+	if err != nil {
+		return false, err
+	}
+	defer closeStore()
+	peers, err := store.ListPeers()
+	if err != nil {
+		return false, err
+	}
+	return len(peers) > 0, nil
 }
 
 func (b *BlobStorage) Close(ctx context.Context) error {

@@ -15,6 +15,7 @@ import (
 	p2phost "p2pbk/internal/network/host"
 	"p2pbk/internal/network/wire"
 	"p2pbk/internal/peer/blobserver"
+	"p2pbk/internal/peer/localdb"
 )
 
 func TestOpenDistributedStorageWithLocatorUsesConfiguredPeers(t *testing.T) {
@@ -54,6 +55,47 @@ func TestOpenDistributedStorageWithLocatorUsesConfiguredPeers(t *testing.T) {
 	}
 	if !bytes.Equal(out.bytes, input) {
 		t.Fatalf("output = %q, want %q", out.bytes, input)
+	}
+}
+
+func TestShouldUseDistributedStorageWithSavedPeers(t *testing.T) {
+	cfg := config.Default()
+	cfg.Node.DataDir = filepath.Join(t.TempDir(), "client")
+	cfg.Network.BootstrapPeers = nil
+
+	distributed, err := ShouldUseDistributedStorage(cfg)
+	if err != nil {
+		t.Fatalf("ShouldUseDistributedStorage returned error: %v", err)
+	}
+	if distributed {
+		t.Fatal("distributed = true before any peer is saved")
+	}
+
+	paths, err := cfg.Paths()
+	if err != nil {
+		t.Fatalf("Paths returned error: %v", err)
+	}
+	db, err := localdb.Open(paths.LocalDB)
+	if err != nil {
+		t.Fatalf("Open localdb returned error: %v", err)
+	}
+	if err := db.UpsertPeer(localdb.PeerRecord{
+		ID:     "peer-a",
+		Addrs:  []string{"/ip4/127.0.0.1/tcp/4001/p2p/peer-a"},
+		Source: "mdns",
+	}); err != nil {
+		t.Fatalf("UpsertPeer returned error: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	distributed, err = ShouldUseDistributedStorage(cfg)
+	if err != nil {
+		t.Fatalf("ShouldUseDistributedStorage returned error after save: %v", err)
+	}
+	if !distributed {
+		t.Fatal("distributed = false after saved peer")
 	}
 }
 

@@ -31,7 +31,11 @@ func newStorage(ctx context.Context, opt *StorageOptions, isCreate bool) (kopiab
 	}
 
 	var id *identity.Identity
-	if len(cfg.Network.BootstrapPeers) > 0 {
+	distributed, err := node.ShouldUseDistributedStorage(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if distributed {
 		paths, err := cfg.Paths()
 		if err != nil {
 			return nil, err
