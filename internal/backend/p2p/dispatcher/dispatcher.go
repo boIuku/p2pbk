@@ -21,17 +21,18 @@ func New(h corehost.Host) *Dispatcher {
 	return &Dispatcher{client: wire.NewClient(h)}
 }
 
-func (d *Dispatcher) PutShard(ctx context.Context, target peer.ID, req blobserver.PutShardRequest) error {
+func (d *Dispatcher) PutShard(ctx context.Context, target peer.ID, req blobserver.PutShardRequest) (blobserver.PutShardResponse, error) {
 	if err := req.Ref.Validate(); err != nil {
-		return err
+		return blobserver.PutShardResponse{}, err
 	}
 	if req.Hash == "" {
 		req.Hash = blobserver.Hash(req.Data)
 	}
-	if err := d.client.Call(ctx, target, blobserver.MethodPutShard, req, nil); err != nil {
-		return fmt.Errorf("put shard on %s: %w", target, err)
+	var out blobserver.PutShardResponse
+	if err := d.client.Call(ctx, target, blobserver.MethodPutShard, req, &out); err != nil {
+		return blobserver.PutShardResponse{}, fmt.Errorf("put shard on %s: %w", target, err)
 	}
-	return nil
+	return out, nil
 }
 
 func (d *Dispatcher) GetShard(ctx context.Context, target peer.ID, req blobserver.GetShardRequest) (blobserver.GetShardResponse, error) {
@@ -62,7 +63,8 @@ func (d *Dispatcher) PutShards(ctx context.Context, targets map[peer.ID]blobserv
 		wg.Add(1)
 		go func(target peer.ID, req blobserver.PutShardRequest) {
 			defer wg.Done()
-			resultCh <- UploadResult{Peer: target, Ref: req.Ref, Err: d.PutShard(ctx, target, req)}
+			_, err := d.PutShard(ctx, target, req)
+			resultCh <- UploadResult{Peer: target, Ref: req.Ref, Err: err}
 		}(target, req)
 	}
 

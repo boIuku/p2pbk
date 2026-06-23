@@ -52,6 +52,8 @@ func newRootCommand() *cobra.Command {
 	cmd.AddCommand(newRestoreCommand())
 	cmd.AddCommand(newRepoCommand())
 	cmd.AddCommand(newSnapshotCommand())
+	cmd.AddCommand(newPeersCommand())
+	cmd.AddCommand(newAuditCommand())
 	cmd.AddCommand(newDaemonCommand())
 	cmd.AddCommand(newBootstrapCommand())
 

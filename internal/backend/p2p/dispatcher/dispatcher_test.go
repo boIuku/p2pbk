@@ -42,8 +42,12 @@ func TestDispatcherTransfersShardToPeer(t *testing.T) {
 	data := []byte("hello from dispatcher")
 	d := New(clientHost)
 
-	if err := d.PutShard(ctx, serverHost.ID(), blobserver.PutShardRequest{Ref: ref, Data: data}); err != nil {
+	putResp, err := d.PutShard(ctx, serverHost.ID(), blobserver.PutShardRequest{Ref: ref, Data: data})
+	if err != nil {
 		t.Fatalf("PutShard returned error: %v", err)
+	}
+	if putResp.Receipt.Hash != blobserver.Hash(data) || putResp.Receipt.Ref.BlobID != ref.BlobID {
+		t.Fatalf("receipt = %+v", putResp.Receipt)
 	}
 
 	got, err := d.GetShard(ctx, serverHost.ID(), blobserver.GetShardRequest{Ref: ref})

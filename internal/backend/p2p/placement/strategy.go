@@ -48,6 +48,36 @@ func NewRoundRobin(peers []peer.ID) (*RoundRobin, error) {
 	return &RoundRobin{peers: out}, nil
 }
 
+func NewScoredRoundRobin(peers []peer.ID, scores map[peer.ID]float64) (*RoundRobin, error) {
+	if len(peers) == 0 {
+		return nil, ErrNoPeers
+	}
+	uniq := map[peer.ID]struct{}{}
+	out := make([]peer.ID, 0, len(peers))
+	for _, p := range peers {
+		if p == "" {
+			continue
+		}
+		if _, ok := uniq[p]; ok {
+			continue
+		}
+		uniq[p] = struct{}{}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return nil, ErrNoPeers
+	}
+	sort.Slice(out, func(i, j int) bool {
+		left := scores[out[i]]
+		right := scores[out[j]]
+		if left == right {
+			return out[i].String() < out[j].String()
+		}
+		return left > right
+	})
+	return &RoundRobin{peers: out}, nil
+}
+
 func (r *RoundRobin) Place(totalShards int) ([]Assignment, error) {
 	if totalShards <= 0 {
 		return nil, fmt.Errorf("totalShards must be positive")

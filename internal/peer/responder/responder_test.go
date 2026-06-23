@@ -21,7 +21,7 @@ func TestResponderAnswersChallenge(t *testing.T) {
 
 	ref := blobserver.ShardRef{Owner: "owner", BlobID: "blob", Index: 0}
 	data := []byte("challenge me")
-	if err := server.PutShard(ctx, blobserver.PutShardRequest{Ref: ref, Data: data}); err != nil {
+	if _, err := server.PutShard(ctx, blobserver.PutShardRequest{Ref: ref, Data: data}); err != nil {
 		t.Fatalf("PutShard returned error: %v", err)
 	}
 

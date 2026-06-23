@@ -3,20 +3,32 @@ package p2p
 import (
 	"context"
 	"errors"
+	"time"
 
 	"p2pbk/internal/backend/p2p/dispatcher"
 	"p2pbk/internal/backend/p2p/locator"
 	"p2pbk/internal/backend/p2p/placement"
 	"p2pbk/internal/peer/blobserver"
+	"p2pbk/internal/peer/localdb"
+	"p2pbk/internal/trust/receipts"
 )
 
 type DistributedBackend struct {
 	dispatcher *dispatcher.Dispatcher
 	placement  placement.Strategy
 	locator    locator.Locator
+	trustDB    *localdb.DB
 }
 
-func NewDistributedBackend(dispatcher *dispatcher.Dispatcher, placement placement.Strategy, locator locator.Locator) (*DistributedBackend, error) {
+type DistributedBackendOption func(*DistributedBackend)
+
+func WithTrustDB(db *localdb.DB) DistributedBackendOption {
+	return func(b *DistributedBackend) {
+		b.trustDB = db
+	}
+}
+
+func NewDistributedBackend(dispatcher *dispatcher.Dispatcher, placement placement.Strategy, locator locator.Locator, opts ...DistributedBackendOption) (*DistributedBackend, error) {
 	if dispatcher == nil {
 		return nil, errors.New("dispatcher is required")
 	}
@@ -26,20 +38,57 @@ func NewDistributedBackend(dispatcher *dispatcher.Dispatcher, placement placemen
 	if locator == nil {
 		return nil, errors.New("locator is required")
 	}
-	return &DistributedBackend{dispatcher: dispatcher, placement: placement, locator: locator}, nil
+	backend := &DistributedBackend{dispatcher: dispatcher, placement: placement, locator: locator}
+	for _, opt := range opts {
+		opt(backend)
+	}
+	return backend, nil
 }
 
-func (b *DistributedBackend) PutShard(ctx context.Context, req blobserver.PutShardRequest) error {
+func (b *DistributedBackend) PutShard(ctx context.Context, req blobserver.PutShardRequest) (blobserver.PutShardResponse, error) {
 	assignments, err := b.placement.Place(req.Ref.Index + 1)
 	if err != nil {
-		return err
+		return blobserver.PutShardResponse{}, err
 	}
 	target := assignments[req.Ref.Index].Peer
-	if err := b.dispatcher.PutShard(ctx, target, req); err != nil {
-		return err
+	resp, err := b.dispatcher.PutShard(ctx, target, req)
+	if err != nil {
+		if b.trustDB != nil {
+			_ = b.trustDB.RecordPeerFailure(target.String(), time.Now().UTC())
+		}
+		return blobserver.PutShardResponse{}, err
 	}
 
-	return b.recordLocation(ctx, req.Ref.BlobID, locator.Location{Peer: target, Ref: req.Ref})
+	if err := b.recordLocation(ctx, req.Ref.BlobID, locator.Location{Peer: target, Ref: req.Ref}); err != nil {
+		return blobserver.PutShardResponse{}, err
+	}
+	if b.trustDB != nil {
+		receipt := resp.Receipt
+		if receipt.Ref == (receipts.ShardRef{}) {
+			receipt.Ref = receiptRef(req.Ref)
+		}
+		if receipt.Hash == "" {
+			receipt.Hash = req.Hash
+		}
+		if receipt.StoredBy == "" {
+			receipt.StoredBy = target.String()
+		}
+		if receipt.IssuedAt.IsZero() {
+			receipt.IssuedAt = time.Now().UTC()
+		}
+		if err := b.trustDB.StoreShardReceipt(localdb.ShardReceiptRecord{
+			PeerID:   target.String(),
+			Receipt:  receipt,
+			StoredAt: receipt.IssuedAt,
+		}); err != nil {
+			return blobserver.PutShardResponse{}, err
+		}
+	}
+	return resp, nil
+}
+
+func receiptRef(ref blobserver.ShardRef) receipts.ShardRef {
+	return receipts.ShardRef{Owner: ref.Owner, BlobID: ref.BlobID, Index: ref.Index}
 }
 
 func (b *DistributedBackend) GetShard(ctx context.Context, req blobserver.GetShardRequest) (blobserver.GetShardResponse, error) {

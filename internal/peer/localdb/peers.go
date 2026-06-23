@@ -11,13 +11,17 @@ import (
 )
 
 type PeerRecord struct {
-	ID          string    `json:"id"`
-	Addrs       []string  `json:"addrs"`
-	Source      string    `json:"source"`
-	FirstSeen   time.Time `json:"first_seen"`
-	LastSeen    time.Time `json:"last_seen"`
-	LastFailure time.Time `json:"last_failure,omitempty"`
-	Failures    int       `json:"failures"`
+	ID             string    `json:"id"`
+	Addrs          []string  `json:"addrs"`
+	Source         string    `json:"source"`
+	FirstSeen      time.Time `json:"first_seen"`
+	LastSeen       time.Time `json:"last_seen"`
+	LastSuccess    time.Time `json:"last_success,omitempty"`
+	LastFailure    time.Time `json:"last_failure,omitempty"`
+	StoredShards   int       `json:"stored_shards"`
+	AuditSuccesses int       `json:"audit_successes"`
+	AuditFailures  int       `json:"audit_failures"`
+	Failures       int       `json:"failures"`
 }
 
 func (db *DB) UpsertPeer(record PeerRecord) error {
@@ -45,11 +49,23 @@ func (db *DB) UpsertPeer(record PeerRecord) error {
 		if existing != nil {
 			record.FirstSeen = existing.FirstSeen
 			record.Addrs = uniqueStrings(append(existing.Addrs, record.Addrs...))
+			if record.LastSuccess.IsZero() {
+				record.LastSuccess = existing.LastSuccess
+			}
 			if record.Failures == 0 {
 				record.Failures = existing.Failures
 			}
 			if record.LastFailure.IsZero() {
 				record.LastFailure = existing.LastFailure
+			}
+			if record.StoredShards == 0 {
+				record.StoredShards = existing.StoredShards
+			}
+			if record.AuditSuccesses == 0 {
+				record.AuditSuccesses = existing.AuditSuccesses
+			}
+			if record.AuditFailures == 0 {
+				record.AuditFailures = existing.AuditFailures
 			}
 		}
 		data, err := json.Marshal(record)
@@ -57,6 +73,59 @@ func (db *DB) UpsertPeer(record PeerRecord) error {
 			return fmt.Errorf("marshal peer record: %w", err)
 		}
 		return b.Put([]byte(record.ID), data)
+	})
+}
+
+func (db *DB) RecordPeerSuccess(peerID string, at time.Time) error {
+	if peerID == "" {
+		return errors.New("peer id is required")
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	return db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(BucketPeers))
+		record, err := peerRecordFromBucket(b, peerID)
+		if err != nil {
+			return err
+		}
+		if record == nil {
+			record = &PeerRecord{ID: peerID, Source: "observed", FirstSeen: at}
+		}
+		record.LastSeen = at.UTC()
+		record.LastSuccess = at.UTC()
+		data, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("marshal peer record: %w", err)
+		}
+		return b.Put([]byte(peerID), data)
+	})
+}
+
+func (db *DB) IncrementStoredShards(peerID string, delta int) error {
+	if peerID == "" {
+		return errors.New("peer id is required")
+	}
+	return db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(BucketPeers))
+		record, err := peerRecordFromBucket(b, peerID)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		if record == nil {
+			record = &PeerRecord{ID: peerID, Source: "observed", FirstSeen: now}
+		}
+		record.LastSeen = now
+		record.StoredShards += delta
+		if record.StoredShards < 0 {
+			record.StoredShards = 0
+		}
+		data, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("marshal peer record: %w", err)
+		}
+		return b.Put([]byte(peerID), data)
 	})
 }
 

@@ -15,8 +15,12 @@ func TestPutGetDeleteShard(t *testing.T) {
 	ref := ShardRef{Owner: "owner-a", BlobID: "blob-a", Index: 2}
 	data := []byte("stored shard data")
 
-	if err := server.PutShard(context.Background(), PutShardRequest{Ref: ref, Data: data, Hash: Hash(data)}); err != nil {
+	putResp, err := server.PutShard(context.Background(), PutShardRequest{Ref: ref, Data: data, Hash: Hash(data)})
+	if err != nil {
 		t.Fatalf("PutShard returned error: %v", err)
+	}
+	if putResp.Receipt.Hash != Hash(data) || putResp.Receipt.Ref.BlobID != ref.BlobID {
+		t.Fatalf("receipt = %+v", putResp.Receipt)
 	}
 
 	got, err := server.GetShard(context.Background(), GetShardRequest{Ref: ref})
@@ -46,7 +50,7 @@ func TestPutShardRejectsHashMismatch(t *testing.T) {
 	server := newTestServer(t)
 	ref := ShardRef{Owner: "owner-a", BlobID: "blob-a", Index: 0}
 
-	if err := server.PutShard(context.Background(), PutShardRequest{Ref: ref, Data: []byte("data"), Hash: Hash([]byte("other"))}); err == nil {
+	if _, err := server.PutShard(context.Background(), PutShardRequest{Ref: ref, Data: []byte("data"), Hash: Hash([]byte("other"))}); err == nil {
 		t.Fatal("PutShard returned nil error for hash mismatch")
 	}
 }
@@ -62,12 +66,12 @@ func TestPutShardEnforcesQuota(t *testing.T) {
 	}
 	ref := ShardRef{Owner: "owner-a", BlobID: "blob-a", Index: 0}
 
-	err = server.PutShard(context.Background(), PutShardRequest{Ref: ref, Data: []byte("12345")})
+	_, err = server.PutShard(context.Background(), PutShardRequest{Ref: ref, Data: []byte("12345")})
 	if !errors.Is(err, quota.ErrExceeded) {
 		t.Fatalf("PutShard error = %v, want ErrExceeded", err)
 	}
 
-	if err := server.PutShard(context.Background(), PutShardRequest{Ref: ref, Data: []byte("1234")}); err != nil {
+	if _, err := server.PutShard(context.Background(), PutShardRequest{Ref: ref, Data: []byte("1234")}); err != nil {
 		t.Fatalf("PutShard under quota returned error: %v", err)
 	}
 	if got := q.Used("owner-a"); got != 4 {

@@ -21,7 +21,7 @@ import (
 )
 
 type ShardBackend interface {
-	PutShard(context.Context, blobserver.PutShardRequest) error
+	PutShard(context.Context, blobserver.PutShardRequest) (blobserver.PutShardResponse, error)
 	GetShard(context.Context, blobserver.GetShardRequest) (blobserver.GetShardResponse, error)
 	DeleteShard(context.Context, blobserver.DeleteShardRequest) (blobserver.DeleteShardResponse, error)
 }
@@ -102,7 +102,7 @@ func (s *Storage) PutBlob(ctx context.Context, blobID blob.ID, data blob.Bytes, 
 	for _, shard := range shards {
 		ref := s.shardRef(blobID, shard.Index)
 		refs = append(refs, ref)
-		if err := s.backend.PutShard(ctx, blobserver.PutShardRequest{
+		if _, err := s.backend.PutShard(ctx, blobserver.PutShardRequest{
 			Ref:  ref,
 			Data: shard.Data,
 			Hash: hex.EncodeToString(shard.Hash[:]),

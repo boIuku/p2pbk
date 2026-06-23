@@ -49,6 +49,8 @@ Day-to-day commands stay user-facing:
 p2pbk status
 p2pbk backup now
 p2pbk restore latest ./restore
+p2pbk peers
+p2pbk audit now
 ```
 
 Nodes discover peers from configured bootstrap addresses, saved peers in
@@ -61,6 +63,11 @@ When `p2pbk daemon` is running, it checks configured backup roots according to
 open/create the Kopia repository. Kopia snapshots are logical full snapshots,
 but storage is incremental/deduplicated: unchanged content is not uploaded
 again.
+
+When distributed storage is used, storage peers return shard receipts and the
+owner records local audit history in `local.db`. Audits verify encrypted shard
+bytes by hash; storage peers still never receive repository passwords,
+plaintext data, or enough information to decrypt backups.
 
 The background peer is an implementation detail exposed as a hidden/advanced
 subcommand for containers and operators:

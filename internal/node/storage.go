@@ -25,6 +25,7 @@ type DistributedStorage struct {
 	Storage *p2p.Storage
 	DHT     *p2pdht.DHT
 	Peers   []peer.ID
+	DB      *localdb.DB
 }
 
 func OpenDistributedStorage(ctx context.Context, cfg config.Config, h corehost.Host, id *identity.Identity) (*DistributedStorage, error) {
@@ -35,36 +36,41 @@ func OpenDistributedStorage(ctx context.Context, cfg config.Config, h corehost.H
 	if err != nil {
 		return nil, err
 	}
-	defer closeStore()
 
 	if _, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, h, cfg.Network.BootstrapPeers, store); err != nil {
+		closeStore()
 		return nil, err
 	}
 	if err := p2pdiscovery.SaveConnectedPeers(store, h, "storage"); err != nil {
+		closeStore()
 		return nil, err
 	}
 
 	dht, err := p2pdht.New(ctx, h, p2pdht.ModeClient)
 	if err != nil {
+		closeStore()
 		return nil, err
 	}
 	if err := dht.Bootstrap(ctx); err != nil {
 		_ = dht.Close()
+		closeStore()
 		return nil, err
 	}
 
 	loc, err := locator.NewDHT(dht, id, id.PublicKey())
 	if err != nil {
 		_ = dht.Close()
+		closeStore()
 		return nil, err
 	}
-	st, peers, err := openDistributedStorageWithConnectedPeers(cfg, h, loc)
+	st, peers, err := openDistributedStorageWithConnectedPeers(cfg, h, loc, store)
 	if err != nil {
 		_ = dht.Close()
+		closeStore()
 		return nil, err
 	}
 
-	return &DistributedStorage{Storage: st, DHT: dht, Peers: peers}, nil
+	return &DistributedStorage{Storage: st, DHT: dht, Peers: peers, DB: store}, nil
 }
 
 func OpenDistributedStorageWithLocator(ctx context.Context, cfg config.Config, h corehost.Host, loc locator.Locator) (*p2p.Storage, []peer.ID, error) {
@@ -85,10 +91,10 @@ func OpenDistributedStorageWithLocator(ctx context.Context, cfg config.Config, h
 		return nil, nil, err
 	}
 
-	return openDistributedStorageWithConnectedPeers(cfg, h, loc)
+	return openDistributedStorageWithConnectedPeers(cfg, h, loc, nil)
 }
 
-func openDistributedStorageWithConnectedPeers(cfg config.Config, h corehost.Host, loc locator.Locator) (*p2p.Storage, []peer.ID, error) {
+func openDistributedStorageWithConnectedPeers(cfg config.Config, h corehost.Host, loc locator.Locator, store *localdb.DB) (*p2p.Storage, []peer.ID, error) {
 	peers := connectedPeers(h)
 	minPeers := cfg.Network.MinPeers
 	if minPeers == 0 {
@@ -98,11 +104,11 @@ func openDistributedStorageWithConnectedPeers(cfg config.Config, h corehost.Host
 		return nil, nil, fmt.Errorf("connected peers %d below network.min_peers %d", len(peers), minPeers)
 	}
 
-	strategy, err := placement.NewRoundRobin(peers)
+	strategy, err := placement.NewScoredRoundRobin(peers, peerScores(store))
 	if err != nil {
 		return nil, nil, err
 	}
-	backend, err := p2p.NewDistributedBackend(dispatcher.New(h), strategy, loc)
+	backend, err := p2p.NewDistributedBackend(dispatcher.New(h), strategy, loc, p2p.WithTrustDB(store))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -123,6 +129,25 @@ func openDistributedStorageWithConnectedPeers(cfg config.Config, h corehost.Host
 	return st, peers, nil
 }
 
+func peerScores(store *localdb.DB) map[peer.ID]float64 {
+	out := map[peer.ID]float64{}
+	if store == nil {
+		return out
+	}
+	stats, err := store.ListPeerStats()
+	if err != nil {
+		return out
+	}
+	for _, stat := range stats {
+		id, err := peer.Decode(stat.ID)
+		if err != nil {
+			continue
+		}
+		out[id] = stat.Score
+	}
+	return out
+}
+
 func (d *DistributedStorage) Close(ctx context.Context) error {
 	var out error
 	if d.Storage != nil {
@@ -130,6 +155,9 @@ func (d *DistributedStorage) Close(ctx context.Context) error {
 	}
 	if d.DHT != nil {
 		out = errors.Join(out, d.DHT.Close())
+	}
+	if d.DB != nil {
+		out = errors.Join(out, d.DB.Close())
 	}
 	return out
 }

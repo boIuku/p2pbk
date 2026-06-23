@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"p2pbk/internal/audit"
 	"p2pbk/internal/config"
 	p2pdht "p2pbk/internal/network/dht"
 	p2pdiscovery "p2pbk/internal/network/discovery"
@@ -18,6 +20,7 @@ import (
 	"p2pbk/internal/peer/quota"
 	"p2pbk/internal/peer/responder"
 	"p2pbk/internal/scheduler"
+	"p2pbk/internal/trust/identity"
 	"p2pbk/internal/trust/reputation"
 )
 
@@ -73,7 +76,15 @@ func runDaemon(ctx context.Context, cfg config.Config, out interface{ Write([]by
 	if err != nil {
 		return err
 	}
-	blobServer, err := blobserver.NewWithQuota(paths.StoreDir, q)
+	id, identityErr := loadDaemonIdentity(paths.Identity, cfg)
+	if identityErr != nil {
+		fmt.Fprintf(out, "identity unavailable for signed receipts: %v\n", identityErr)
+	}
+	blobServer, err := blobserver.NewWithOptions(paths.StoreDir, blobserver.Options{
+		Quota:    q,
+		Identity: id,
+		PeerID:   host.ID().String(),
+	})
 	if err != nil {
 		return err
 	}
@@ -110,7 +121,22 @@ func runDaemon(ctx context.Context, cfg config.Config, out interface{ Write([]by
 		DB:         db,
 		Output:     out,
 	})
+	if interval, err := time.ParseDuration(cfg.Trust.ChallengeInterval); err == nil && interval > 0 {
+		audit.Start(ctx, audit.Options{Config: cfg, Host: host, DB: db, Output: out}, interval)
+		fmt.Fprintf(out, "audits: every %s\n", interval)
+	}
 
 	<-ctx.Done()
 	return nil
+}
+
+func loadDaemonIdentity(path string, cfg config.Config) (*identity.Identity, error) {
+	passphrase := cfg.Trust.IdentityPassphrase
+	if passphrase == "" {
+		passphrase = os.Getenv("P2PBK_IDENTITY_PASSPHRASE")
+	}
+	if passphrase == "" {
+		return nil, fmt.Errorf("identity passphrase is not set")
+	}
+	return identity.Load(path, passphrase)
 }

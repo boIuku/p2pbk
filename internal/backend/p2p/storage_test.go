@@ -181,14 +181,14 @@ func newMemoryShardBackend() *memoryShardBackend {
 	return &memoryShardBackend{shards: map[blobserver.ShardRef][]byte{}}
 }
 
-func (b *memoryShardBackend) PutShard(ctx context.Context, req blobserver.PutShardRequest) error {
+func (b *memoryShardBackend) PutShard(ctx context.Context, req blobserver.PutShardRequest) (blobserver.PutShardResponse, error) {
 	if req.Hash != blobserver.Hash(req.Data) {
-		return errors.New("hash mismatch")
+		return blobserver.PutShardResponse{}, errors.New("hash mismatch")
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.shards[req.Ref] = append([]byte(nil), req.Data...)
-	return nil
+	return blobserver.PutShardResponse{}, nil
 }
 
 func (b *memoryShardBackend) GetShard(ctx context.Context, req blobserver.GetShardRequest) (blobserver.GetShardResponse, error) {
