@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"p2pbk/internal/kopiaengine"
 )
 
 func newRepoCommand() *cobra.Command {
@@ -50,13 +53,13 @@ func newRepoCommand() *cobra.Command {
 		Use:   "status",
 		Short: "Show Kopia repository status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			engine, err := openKopiaEngine()
+			engine, err := openExistingKopiaEngine()
 			if err != nil {
-				return err
+				return friendlyRepositoryError(err)
 			}
 			status, err := engine.Status(context.Background())
 			if err != nil {
-				return err
+				return friendlyRepositoryError(err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "config: %s\n", status.ConfigPath)
 			fmt.Fprintf(cmd.OutOrStdout(), "storage: %s\n", status.StorageType)
@@ -72,13 +75,13 @@ func newRepoCommand() *cobra.Command {
 		Use:   "maintenance",
 		Short: "Show Kopia maintenance schedule",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			engine, err := openKopiaEngine()
+			engine, err := openExistingKopiaEngine()
 			if err != nil {
-				return err
+				return friendlyRepositoryError(err)
 			}
 			status, err := engine.MaintenanceStatus(context.Background())
 			if err != nil {
-				return err
+				return friendlyRepositoryError(err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "next_full: %s\n", status.NextFull.Format("2006-01-02T15:04:05Z07:00"))
 			fmt.Fprintf(cmd.OutOrStdout(), "next_quick: %s\n", status.NextQuick.Format("2006-01-02T15:04:05Z07:00"))
@@ -87,4 +90,11 @@ func newRepoCommand() *cobra.Command {
 	})
 
 	return cmd
+}
+
+func friendlyRepositoryError(err error) error {
+	if errors.Is(err, kopiaengine.ErrRepositoryNotConnected) {
+		return fmt.Errorf("repository is not initialized yet; run `p2pbk repo init` or `p2pbk backup now` first")
+	}
+	return err
 }

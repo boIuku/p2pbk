@@ -71,6 +71,36 @@ The important user-level fields are:
 With the default 6 data shards and 3 parity shards, 10GB of protected source
 data requires about 15GB across peers before metadata and cache overhead.
 
+## Peer Discovery
+
+p2pbk now has a local-first discovery path:
+
+```text
+configured bootstrap peers
+saved peers from localdb
+LAN peers discovered through mDNS
+```
+
+When local discovery is enabled, a daemon advertises and browses the configured
+mDNS service:
+
+```json
+{
+  "network": {
+    "enable_local_discovery": true,
+    "local_discovery_service": "_p2pbk._udp"
+  }
+}
+```
+
+Discovered and successfully connected peers are persisted in the local peer
+book (`local.db`, `peers` bucket). On the next startup, p2pbk tries configured
+peers and saved peers before checking whether enough peers are connected for
+storage placement.
+
+Remote discovery can build on the same peer book later by adding signed
+rendezvous/DHT records as another peer source.
+
 ## Docker
 
 Docker uses the same binary and command surface:
@@ -85,6 +115,14 @@ are not the integration path.
 
 ```powershell
 $env:P2PBK_DOCKER_E2E="1"
+go test ./test/integration -run TestDockerE2EBackupRestore -v
+```
+
+To print all container logs even when the test passes:
+
+```powershell
+$env:P2PBK_DOCKER_E2E="1"
+$env:P2PBK_DOCKER_E2E_LOGS="1"
 go test ./test/integration -run TestDockerE2EBackupRestore -v
 ```
 

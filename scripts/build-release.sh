@@ -7,4 +7,8 @@ DATE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 LDFLAGS="-X p2pbk/internal/version.Version=${VERSION} -X p2pbk/internal/version.Commit=${COMMIT} -X p2pbk/internal/version.Date=${DATE}"
 
 mkdir -p dist
-go build -ldflags "$LDFLAGS" -o dist/p2pbk ./cmd/p2pbk
+EXE=""
+if [ "$(go env GOOS)" = "windows" ]; then
+  EXE=".exe"
+fi
+go build -ldflags "$LDFLAGS" -o "dist/p2pbk${EXE}" ./cmd/p2pbk

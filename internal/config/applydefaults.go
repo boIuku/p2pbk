@@ -25,6 +25,8 @@ func applyDefaults(v *viper.Viper) {
 	v.SetDefault("network.bootstrap_peers", []string{})
 	v.SetDefault("network.protocol_id", defaultProtocolID)
 	v.SetDefault("network.min_peers", 3)
+	v.SetDefault("network.enable_local_discovery", true)
+	v.SetDefault("network.local_discovery_service", "_p2pbk._udp")
 
 	v.SetDefault("backup.data_shards", 6)
 	v.SetDefault("backup.parity_shards", 3)

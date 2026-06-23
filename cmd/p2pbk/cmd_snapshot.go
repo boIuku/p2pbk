@@ -17,13 +17,13 @@ func newSnapshotCommand() *cobra.Command {
 		Use:   "list",
 		Short: "List snapshots",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			engine, err := openKopiaEngine()
+			engine, err := openExistingKopiaEngine()
 			if err != nil {
-				return err
+				return friendlyRepositoryError(err)
 			}
 			snapshots, err := engine.ListSnapshots(context.Background())
 			if err != nil {
-				return err
+				return friendlyRepositoryError(err)
 			}
 			for _, s := range snapshots {
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", s.ID, s.StartTime, s.Source, s.Description)
@@ -39,13 +39,13 @@ func newSnapshotCommand() *cobra.Command {
 			if len(args) < 1 {
 				return fmt.Errorf("usage: p2pbk snapshot show <snapshot-id|latest>")
 			}
-			engine, err := openKopiaEngine()
+			engine, err := openExistingKopiaEngine()
 			if err != nil {
-				return err
+				return friendlyRepositoryError(err)
 			}
 			s, err := engine.ShowSnapshot(context.Background(), args[0])
 			if err != nil {
-				return err
+				return friendlyRepositoryError(err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "id: %s\n", s.ID)
 			fmt.Fprintf(cmd.OutOrStdout(), "source: %s\n", s.Source)

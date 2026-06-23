@@ -17,7 +17,9 @@
     ],
     "bootstrap_peers": [],
     "protocol_id": "/p2pbk/1.0.0",
-    "min_peers": 3
+    "min_peers": 3,
+    "enable_local_discovery": true,
+    "local_discovery_service": "_p2pbk._udp"
   },
   "backup": {
     "data_shards": 6,

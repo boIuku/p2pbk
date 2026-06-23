@@ -16,7 +16,8 @@ import (
 	"p2pbk/internal/backend/p2p/placement"
 	"p2pbk/internal/config"
 	p2pdht "p2pbk/internal/network/dht"
-	p2phost "p2pbk/internal/network/host"
+	p2pdiscovery "p2pbk/internal/network/discovery"
+	"p2pbk/internal/peer/localdb"
 	"p2pbk/internal/trust/identity"
 )
 
@@ -30,7 +31,16 @@ func OpenDistributedStorage(ctx context.Context, cfg config.Config, h corehost.H
 	if id == nil {
 		return nil, errors.New("identity is required for distributed storage")
 	}
-	if _, err := p2phost.ConnectAddrs(ctx, h, cfg.Network.BootstrapPeers); err != nil {
+	store, closeStore, err := openPeerStore(cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer closeStore()
+
+	if _, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, h, cfg.Network.BootstrapPeers, store); err != nil {
+		return nil, err
+	}
+	if err := p2pdiscovery.SaveConnectedPeers(store, h, "storage"); err != nil {
 		return nil, err
 	}
 
@@ -48,7 +58,7 @@ func OpenDistributedStorage(ctx context.Context, cfg config.Config, h corehost.H
 		_ = dht.Close()
 		return nil, err
 	}
-	st, peers, err := OpenDistributedStorageWithLocator(ctx, cfg, h, loc)
+	st, peers, err := openDistributedStorageWithConnectedPeers(cfg, h, loc)
 	if err != nil {
 		_ = dht.Close()
 		return nil, err
@@ -61,10 +71,24 @@ func OpenDistributedStorageWithLocator(ctx context.Context, cfg config.Config, h
 	if loc == nil {
 		return nil, nil, errors.New("locator is required")
 	}
-	if _, err := p2phost.ConnectAddrs(ctx, h, cfg.Network.BootstrapPeers); err != nil {
+
+	store, closeStore, err := openPeerStore(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer closeStore()
+
+	if _, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, h, cfg.Network.BootstrapPeers, store); err != nil {
+		return nil, nil, err
+	}
+	if err := p2pdiscovery.SaveConnectedPeers(store, h, "storage"); err != nil {
 		return nil, nil, err
 	}
 
+	return openDistributedStorageWithConnectedPeers(cfg, h, loc)
+}
+
+func openDistributedStorageWithConnectedPeers(cfg config.Config, h corehost.Host, loc locator.Locator) (*p2p.Storage, []peer.ID, error) {
 	peers := connectedPeers(h)
 	minPeers := cfg.Network.MinPeers
 	if minPeers == 0 {
@@ -131,4 +155,16 @@ func owner(cfg config.Config) string {
 		return cfg.Node.DisplayName
 	}
 	return "local"
+}
+
+func openPeerStore(cfg config.Config) (*localdb.DB, func(), error) {
+	paths, err := cfg.Paths()
+	if err != nil {
+		return nil, func() {}, err
+	}
+	db, err := localdb.Open(paths.LocalDB)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return db, func() { _ = db.Close() }, nil
 }

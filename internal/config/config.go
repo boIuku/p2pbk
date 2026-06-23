@@ -32,10 +32,12 @@ type StorageConfig struct {
 }
 
 type NetworkConfig struct {
-	ListenAddrs    []string `mapstructure:"listen_addrs" json:"listen_addrs"`
-	BootstrapPeers []string `mapstructure:"bootstrap_peers" json:"bootstrap_peers"`
-	ProtocolID     string   `mapstructure:"protocol_id" json:"protocol_id"`
-	MinPeers       int      `mapstructure:"min_peers" json:"min_peers"`
+	ListenAddrs           []string `mapstructure:"listen_addrs" json:"listen_addrs"`
+	BootstrapPeers        []string `mapstructure:"bootstrap_peers" json:"bootstrap_peers"`
+	ProtocolID            string   `mapstructure:"protocol_id" json:"protocol_id"`
+	MinPeers              int      `mapstructure:"min_peers" json:"min_peers"`
+	EnableLocalDiscovery  bool     `mapstructure:"enable_local_discovery" json:"enable_local_discovery"`
+	LocalDiscoveryService string   `mapstructure:"local_discovery_service" json:"local_discovery_service"`
 }
 
 type BackupConfig struct {
@@ -117,10 +119,12 @@ func FromViper(v *viper.Viper) Config {
 			OfferBytes:     v.GetInt64("storage.offer_bytes"),
 		},
 		Network: NetworkConfig{
-			ListenAddrs:    v.GetStringSlice("network.listen_addrs"),
-			BootstrapPeers: v.GetStringSlice("network.bootstrap_peers"),
-			ProtocolID:     v.GetString("network.protocol_id"),
-			MinPeers:       v.GetInt("network.min_peers"),
+			ListenAddrs:           v.GetStringSlice("network.listen_addrs"),
+			BootstrapPeers:        v.GetStringSlice("network.bootstrap_peers"),
+			ProtocolID:            v.GetString("network.protocol_id"),
+			MinPeers:              v.GetInt("network.min_peers"),
+			EnableLocalDiscovery:  v.GetBool("network.enable_local_discovery"),
+			LocalDiscoveryService: v.GetString("network.local_discovery_service"),
 		},
 		Backup: BackupConfig{
 			DataShards:   v.GetInt("backup.data_shards"),
@@ -167,6 +171,9 @@ func (c Config) Validate() error {
 	}
 	if c.Network.MinPeers < 0 {
 		errs = append(errs, errors.New("network.min_peers must be non-negative"))
+	}
+	if c.Network.EnableLocalDiscovery && c.Network.LocalDiscoveryService == "" {
+		errs = append(errs, errors.New("network.local_discovery_service is required when local discovery is enabled"))
 	}
 	if c.Backup.DataShards <= 0 {
 		errs = append(errs, errors.New("backup.data_shards must be positive"))

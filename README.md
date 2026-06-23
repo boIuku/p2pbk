@@ -51,6 +51,10 @@ p2pbk backup now
 p2pbk restore latest ./restore
 ```
 
+Nodes discover peers from configured bootstrap addresses, saved peers in
+`local.db`, and local LAN mDNS when enabled. Remote discovery/rendezvous can
+reuse the same saved peer book later.
+
 The background peer is an implementation detail exposed as a hidden/advanced
 subcommand for containers and operators:
 
@@ -69,6 +73,13 @@ use that surface rather than scripts.
 
 ## Development
 
+Build the local binary:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
+.\dist\p2pbk.exe version
+```
+
 ```powershell
 go test ./...
 ```
@@ -77,5 +88,13 @@ Docker integration tests are driven from Go and skipped by default:
 
 ```powershell
 $env:P2PBK_DOCKER_E2E="1"
+go test ./test/integration -run TestDockerE2EBackupRestore -v
+```
+
+To print container logs even when the test passes:
+
+```powershell
+$env:P2PBK_DOCKER_E2E="1"
+$env:P2PBK_DOCKER_E2E_LOGS="1"
 go test ./test/integration -run TestDockerE2EBackupRestore -v
 ```

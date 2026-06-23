@@ -22,6 +22,23 @@ func openKopiaEngine() (*kopiaengine.Engine, error) {
 	return kopiaengine.New(configPath, cfg, password), nil
 }
 
+func openExistingKopiaEngine() (*kopiaengine.Engine, error) {
+	cfg := currentConfig()
+	configPath := currentConfigPath(cfg)
+	if configPath == "" {
+		return nil, fmt.Errorf("p2pbk config file is required; pass --config or run p2pbk init first")
+	}
+	probe := kopiaengine.New(configPath, cfg, "")
+	if !probe.RepositoryConnected() {
+		return nil, fmt.Errorf("%w: run `p2pbk repo init` or `p2pbk backup now` first", kopiaengine.ErrRepositoryNotConnected)
+	}
+	password := os.Getenv("P2PBK_REPOSITORY_PASSWORD")
+	if password == "" {
+		return nil, fmt.Errorf("repository password is required; set P2PBK_REPOSITORY_PASSWORD")
+	}
+	return kopiaengine.New(configPath, cfg, password), nil
+}
+
 func currentConfigPath(cfg config.Config) string {
 	if used := configFileUsed(); used != "" {
 		return used

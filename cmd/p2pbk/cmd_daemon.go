@@ -10,6 +10,7 @@ import (
 
 	"p2pbk/internal/config"
 	p2pdht "p2pbk/internal/network/dht"
+	p2pdiscovery "p2pbk/internal/network/discovery"
 	p2phost "p2pbk/internal/network/host"
 	"p2pbk/internal/network/wire"
 	"p2pbk/internal/peer/blobserver"
@@ -47,7 +48,13 @@ func runDaemon(ctx context.Context, cfg config.Config, out interface{ Write([]by
 	}
 	defer host.Close()
 
-	connected, err := p2phost.ConnectAddrs(ctx, host, cfg.Network.BootstrapPeers)
+	db, err := localdb.Open(paths.LocalDB)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	connected, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, host, cfg.Network.BootstrapPeers, db)
 	if err != nil {
 		return err
 	}
@@ -60,12 +67,6 @@ func runDaemon(ctx context.Context, cfg config.Config, out interface{ Write([]by
 	if err := dht.Bootstrap(ctx); err != nil {
 		return err
 	}
-
-	db, err := localdb.Open(paths.LocalDB)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
 
 	q, err := quota.New(cfg.Storage.OfferBytes)
 	if err != nil {
@@ -88,6 +89,18 @@ func runDaemon(ctx context.Context, cfg config.Config, out interface{ Write([]by
 	}
 	for _, peer := range connected {
 		fmt.Fprintf(out, "connected bootstrap: %s\n", peer.ID)
+	}
+	if cfg.Network.EnableLocalDiscovery {
+		localDiscovery, err := p2pdiscovery.StartLocal(ctx, host, db, cfg.Network.LocalDiscoveryService)
+		if err != nil {
+			fmt.Fprintf(out, "local discovery unavailable: %v\n", err)
+		} else {
+			defer localDiscovery.Close()
+			fmt.Fprintf(out, "local discovery: %s\n", cfg.Network.LocalDiscoveryService)
+		}
+	}
+	if err := p2pdiscovery.SaveConnectedPeers(db, host, "daemon"); err != nil {
+		return err
 	}
 	fmt.Fprintf(out, "store: %s\n", filepath.Clean(paths.StoreDir))
 

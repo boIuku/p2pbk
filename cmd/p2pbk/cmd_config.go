@@ -71,6 +71,8 @@ func newConfigCommand() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "Offer bytes: %d\n", cfg.Storage.OfferBytes)
 			fmt.Fprintf(cmd.OutOrStdout(), "Protocol: %s\n", cfg.Network.ProtocolID)
 			fmt.Fprintf(cmd.OutOrStdout(), "Min peers: %d\n", cfg.Network.MinPeers)
+			fmt.Fprintf(cmd.OutOrStdout(), "Local discovery: %t\n", cfg.Network.EnableLocalDiscovery)
+			fmt.Fprintf(cmd.OutOrStdout(), "Local discovery service: %s\n", cfg.Network.LocalDiscoveryService)
 			fmt.Fprintf(cmd.OutOrStdout(), "Protected roots: %v\n", cfg.Backup.Roots)
 			fmt.Fprintf(cmd.OutOrStdout(), "Max protected data: %d bytes\n", cfg.Backup.MaxBytes)
 			fmt.Fprintf(cmd.OutOrStdout(), "Schedule: %s\n", cfg.Backup.Schedule)
@@ -137,6 +139,8 @@ func applyConfigSet(cfg *config.Config, key, value string) error {
 		cfg.Storage.OfferBytes = n
 	case "network.protocol_id":
 		cfg.Network.ProtocolID = value
+	case "network.local_discovery_service":
+		cfg.Network.LocalDiscoveryService = value
 	case "backup.max_bytes":
 		n, err := parseByteSize(value)
 		if err != nil {

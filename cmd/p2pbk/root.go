@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -20,17 +21,22 @@ func newRootCommand() *cobra.Command {
 		Use:   "p2pbk",
 		Short: "Peer-to-peer backup CLI",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			if configPath != "" {
-				viper.SetConfigFile(configPath)
-				activeConfigPath = configPath
-				if cmd.CommandPath() == "p2pbk init" {
-					if _, err := os.Stat(configPath); os.IsNotExist(err) {
-						return nil
-					}
+			path := configPath
+			if path == "" {
+				path = defaultConfigPath()
+			}
+			if path == "" {
+				return nil
+			}
+			viper.SetConfigFile(path)
+			activeConfigPath = path
+			if cmd.CommandPath() == "p2pbk init" {
+				if _, err := os.Stat(path); os.IsNotExist(err) {
+					return nil
 				}
-				if err := viper.ReadInConfig(); err != nil {
-					return fmt.Errorf("read config: %w", err)
-				}
+			}
+			if err := viper.ReadInConfig(); err != nil {
+				return fmt.Errorf("read config: %w", err)
 			}
 			return nil
 		},
@@ -74,5 +80,20 @@ func configFileUsed() string {
 	if activeConfigPath != "" {
 		return activeConfigPath
 	}
-	return viper.ConfigFileUsed()
+	if used := viper.ConfigFileUsed(); used != "" {
+		return used
+	}
+	return defaultConfigPath()
+}
+
+func defaultConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	path := filepath.Join(home, ".p2pbk", "config.json")
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	return ""
 }

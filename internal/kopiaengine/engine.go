@@ -30,6 +30,8 @@ const (
 	repositoryFileName = "kopia.repository.config"
 )
 
+var ErrRepositoryNotConnected = errors.New("kopia repository is not initialized or connected")
+
 type StorageOptions struct {
 	ConfigPath string `json:"configPath"`
 }
@@ -261,11 +263,21 @@ func (e *Engine) MaintenanceStatus(ctx context.Context) (MaintenanceStatus, erro
 
 func (e *Engine) openRepository(ctx context.Context) (repo.Repository, error) {
 	RegisterProvider()
+	if _, err := os.Stat(e.RepositoryConfigPath()); errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("%w: run `p2pbk repo init` or `p2pbk backup now` first", ErrRepositoryNotConnected)
+	} else if err != nil {
+		return nil, fmt.Errorf("stat kopia repository config: %w", err)
+	}
 	rep, err := repo.Open(ctx, e.RepositoryConfigPath(), e.Password, &repo.Options{})
 	if err != nil {
 		return nil, fmt.Errorf("open kopia repository: %w", err)
 	}
 	return rep, nil
+}
+
+func (e *Engine) RepositoryConnected() bool {
+	_, err := os.Stat(e.RepositoryConfigPath())
+	return err == nil
 }
 
 func (e *Engine) openStorage(ctx context.Context, isCreate bool) (*openedStorage, error) {
