@@ -54,6 +54,7 @@ func newRootCommand() *cobra.Command {
 	cmd.AddCommand(newSnapshotCommand())
 	cmd.AddCommand(newPeersCommand())
 	cmd.AddCommand(newAuditCommand())
+	cmd.AddCommand(newResetCommand())
 	cmd.AddCommand(newDaemonCommand())
 	cmd.AddCommand(newBootstrapCommand())
 

@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
+	corehost "github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/spf13/cobra"
 
 	"p2pbk/internal/audit"
@@ -23,6 +26,13 @@ import (
 	"p2pbk/internal/trust/identity"
 	"p2pbk/internal/trust/reputation"
 )
+
+type daemonRuntime struct {
+	paths *config.Paths
+	host  corehost.Host
+	db    *localdb.DB
+	dht   *p2pdht.DHT
+}
 
 func newDaemonCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -41,49 +51,98 @@ func newDaemonCommand() *cobra.Command {
 }
 
 func runDaemon(ctx context.Context, cfg config.Config, out interface{ Write([]byte) (int, error) }) error {
-	paths, err := cfg.Paths()
+	runtime, err := openDaemonRuntime(ctx, cfg)
 	if err != nil {
 		return err
+	}
+	defer runtime.Close()
+
+	connected, err := startDaemonNetworking(ctx, cfg, runtime)
+	if err != nil {
+		return err
+	}
+	if err := registerDaemonServices(cfg, runtime, out); err != nil {
+		return err
+	}
+	localDiscovery, err := startDaemonDiscovery(ctx, cfg, runtime, out)
+	if err != nil {
+		return err
+	}
+	defer localDiscovery.Close()
+
+	writeDaemonStartup(out, runtime, connected)
+	startDaemonJobs(ctx, cfg, runtime, out)
+
+	<-ctx.Done()
+	return nil
+}
+
+func openDaemonRuntime(ctx context.Context, cfg config.Config) (*daemonRuntime, error) {
+	paths, err := cfg.Paths()
+	if err != nil {
+		return nil, err
 	}
 
 	host, err := p2phost.New(ctx, p2phost.Options{ListenAddrs: cfg.Network.ListenAddrs})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer host.Close()
 
 	db, err := localdb.Open(paths.LocalDB)
 	if err != nil {
-		return err
-	}
-	defer db.Close()
-
-	connected, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, host, cfg.Network.BootstrapPeers, db)
-	if err != nil {
-		return err
+		_ = host.Close()
+		return nil, err
 	}
 
-	dht, err := p2pdht.New(ctx, host, p2pdht.ModeServer)
-	if err != nil {
-		return err
+	return &daemonRuntime{paths: paths, host: host, db: db}, nil
+}
+
+func (r *daemonRuntime) Close() error {
+	var out error
+	if r.dht != nil {
+		out = errors.Join(out, r.dht.Close())
 	}
-	defer dht.Close()
+	if r.db != nil {
+		out = errors.Join(out, r.db.Close())
+	}
+	if r.host != nil {
+		out = errors.Join(out, r.host.Close())
+	}
+	return out
+}
+
+func startDaemonNetworking(ctx context.Context, cfg config.Config, runtime *daemonRuntime) ([]peer.AddrInfo, error) {
+	connected, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, runtime.host, cfg.Network.BootstrapPeers, runtime.db)
+	if err != nil {
+		return nil, err
+	}
+
+	dht, err := p2pdht.New(ctx, runtime.host, p2pdht.ModeServer)
+	if err != nil {
+		return nil, err
+	}
 	if err := dht.Bootstrap(ctx); err != nil {
-		return err
+		_ = dht.Close()
+		return nil, err
 	}
+	runtime.dht = dht
 
+	return connected, nil
+}
+
+func registerDaemonServices(cfg config.Config, runtime *daemonRuntime, out interface{ Write([]byte) (int, error) }) error {
 	q, err := quota.New(cfg.Storage.OfferBytes)
 	if err != nil {
 		return err
 	}
-	id, identityErr := loadDaemonIdentity(paths.Identity, cfg)
+	id, identityErr := loadDaemonIdentity(runtime.paths.Identity, cfg)
 	if identityErr != nil {
 		fmt.Fprintf(out, "identity unavailable for signed receipts: %v\n", identityErr)
 	}
-	blobServer, err := blobserver.NewWithOptions(paths.StoreDir, blobserver.Options{
+	blobServer, err := blobserver.NewWithOptions(runtime.paths.StoreDir, blobserver.Options{
 		Quota:    q,
 		Identity: id,
-		PeerID:   host.ID().String(),
+		PeerID:   runtime.host.ID().String(),
 	})
 	if err != nil {
 		return err
@@ -92,42 +151,49 @@ func runDaemon(ctx context.Context, cfg config.Config, out interface{ Write([]by
 	router := wire.NewRouter()
 	blobServer.Register(router)
 	reputationWindow, _ := time.ParseDuration(cfg.Trust.ReputationWindow)
-	responder.New(blobServer, db, reputation.New(reputationWindow), responder.WithPeerID(host.ID())).Register(router)
-	router.Register(host)
+	responder.New(blobServer, runtime.db, reputation.New(reputationWindow), responder.WithPeerID(runtime.host.ID())).Register(router)
+	router.Register(runtime.host)
+	return nil
+}
 
-	fmt.Fprintf(out, "p2pbk peer: %s\n", host.ID())
-	for _, addr := range host.Addrs() {
-		fmt.Fprintf(out, "listening: %s/p2p/%s\n", addr, host.ID())
+func startDaemonDiscovery(ctx context.Context, cfg config.Config, runtime *daemonRuntime, out interface{ Write([]byte) (int, error) }) (*p2pdiscovery.LocalService, error) {
+	if err := p2pdiscovery.SaveConnectedPeers(runtime.db, runtime.host, "daemon"); err != nil {
+		return nil, err
+	}
+	if !cfg.Network.EnableLocalDiscovery {
+		return nil, nil
+	}
+	localDiscovery, err := p2pdiscovery.StartLocal(ctx, runtime.host, runtime.db, cfg.Network.LocalDiscoveryService)
+	if err != nil {
+		fmt.Fprintf(out, "local discovery unavailable: %v\n", err)
+		return nil, nil
+	}
+	fmt.Fprintf(out, "local discovery: %s\n", cfg.Network.LocalDiscoveryService)
+	return localDiscovery, nil
+}
+
+func writeDaemonStartup(out interface{ Write([]byte) (int, error) }, runtime *daemonRuntime, connected []peer.AddrInfo) {
+	fmt.Fprintf(out, "p2pbk peer: %s\n", runtime.host.ID())
+	for _, addr := range runtime.host.Addrs() {
+		fmt.Fprintf(out, "listening: %s/p2p/%s\n", addr, runtime.host.ID())
 	}
 	for _, peer := range connected {
 		fmt.Fprintf(out, "connected bootstrap: %s\n", peer.ID)
 	}
-	if cfg.Network.EnableLocalDiscovery {
-		localDiscovery, err := p2pdiscovery.StartLocal(ctx, host, db, cfg.Network.LocalDiscoveryService)
-		if err != nil {
-			fmt.Fprintf(out, "local discovery unavailable: %v\n", err)
-		} else {
-			defer localDiscovery.Close()
-			fmt.Fprintf(out, "local discovery: %s\n", cfg.Network.LocalDiscoveryService)
-		}
-	}
-	if err := p2pdiscovery.SaveConnectedPeers(db, host, "daemon"); err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "store: %s\n", filepath.Clean(paths.StoreDir))
+	fmt.Fprintf(out, "store: %s\n", filepath.Clean(runtime.paths.StoreDir))
+}
+
+func startDaemonJobs(ctx context.Context, cfg config.Config, runtime *daemonRuntime, out interface{ Write([]byte) (int, error) }) {
 	scheduler.Start(ctx, scheduler.Options{
 		Config:     cfg,
 		ConfigPath: currentConfigPath(cfg),
-		DB:         db,
+		DB:         runtime.db,
 		Output:     out,
 	})
 	if interval, err := time.ParseDuration(cfg.Trust.ChallengeInterval); err == nil && interval > 0 {
-		audit.Start(ctx, audit.Options{Config: cfg, Host: host, DB: db, Output: out}, interval)
+		audit.Start(ctx, audit.Options{Config: cfg, Host: runtime.host, DB: runtime.db, Output: out}, interval)
 		fmt.Fprintf(out, "audits: every %s\n", interval)
 	}
-
-	<-ctx.Done()
-	return nil
 }
 
 func loadDaemonIdentity(path string, cfg config.Config) (*identity.Identity, error) {

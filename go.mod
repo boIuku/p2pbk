@@ -14,7 +14,7 @@ require (
 	github.com/multiformats/go-multiaddr v0.12.0
 	github.com/spf13/cobra v1.8.0
 	go.etcd.io/bbolt v1.3.8
-	gopkg.in/yaml.v3 v3.0.1
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 require (

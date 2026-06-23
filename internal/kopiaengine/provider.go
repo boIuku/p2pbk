@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	kopiablob "github.com/kopia/kopia/repo/blob"
@@ -49,7 +50,7 @@ func newStorage(ctx context.Context, opt *StorageOptions, isCreate bool) (kopiab
 		}
 		id, err = identity.Load(paths.Identity, passphrase)
 		if err != nil {
-			return nil, fmt.Errorf("load p2pbk identity: %w", err)
+			return nil, identityLoadError(err)
 		}
 	}
 
@@ -62,4 +63,11 @@ func newStorage(ctx context.Context, opt *StorageOptions, isCreate bool) (kopiab
 		options: *opt,
 		backend: backend,
 	}, nil
+}
+
+func identityLoadError(err error) error {
+	if strings.Contains(err.Error(), "no identity matched any of the recipients") {
+		return fmt.Errorf("open p2pbk identity: wrong identity passphrase; set P2PBK_IDENTITY_PASSPHRASE to the passphrase used during `p2pbk init`")
+	}
+	return fmt.Errorf("open p2pbk identity: %w", err)
 }

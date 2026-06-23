@@ -81,3 +81,51 @@ func TestRunOnceRecordsSuccessfulAudit(t *testing.T) {
 		t.Fatalf("stats = %+v", stats)
 	}
 }
+
+func TestRunOnceHonorsLimit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	host, err := p2phost.New(ctx, p2phost.Options{})
+	if err != nil {
+		t.Fatalf("host New returned error: %v", err)
+	}
+	defer host.Close()
+
+	db, err := localdb.Open(filepath.Join(t.TempDir(), "local.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	defer db.Close()
+
+	for i := 0; i < 3; i++ {
+		ref := blobserver.ShardRef{Owner: "owner", BlobID: "blob", Index: i}
+		if err := db.StoreShardReceipt(localdb.ShardReceiptRecord{
+			PeerID: host.ID().String(),
+			Receipt: receipts.Receipt{
+				Ref:       receipts.ShardRef{Owner: ref.Owner, BlobID: ref.BlobID, Index: ref.Index},
+				Hash:      "hash",
+				StoredBy:  host.ID().String(),
+				IssuedAt:  time.Unix(int64(i+1), 0),
+				Signature: "unsigned-test",
+			},
+			StoredAt: time.Unix(int64(i+1), 0),
+		}); err != nil {
+			t.Fatalf("StoreShardReceipt returned error: %v", err)
+		}
+	}
+
+	summary, err := RunOnce(ctx, Options{
+		Config:       config.Default(),
+		Host:         host,
+		DB:           db,
+		Limit:        1,
+		ShardTimeout: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("RunOnce returned error: %v", err)
+	}
+	if summary.Checked != 1 {
+		t.Fatalf("checked = %d, want 1", summary.Checked)
+	}
+}
