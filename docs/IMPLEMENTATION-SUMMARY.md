@@ -85,8 +85,8 @@ p2pbk is a distributed backup system using erasure coding, libp2p networking, an
 - **add**: Add files for backup (placeholder)
 - **backup**: Backup data (placeholder)
 - **restore**: Restore data (placeholder)
-- **bootstrap**: Bootstrap peer discovery
-- **backupd**: Long-running peer daemon
+- **daemon**: Hidden p2pbk subcommand for the long-running peer service
+- **bootstrap**: Hidden p2pbk subcommand for bootstrap peer discovery
 
 ## Files Created/Modified
 
@@ -98,8 +98,8 @@ p2pbk is a distributed backup system using erasure coding, libp2p networking, an
 | `cmd/p2pbk/cmd_add.go` | ✅ | Add command |
 | `cmd/p2pbk/cmd_backup.go` | ✅ | Backup command |
 | `cmd/p2pbk/cmd_restore.go` | ✅ | Restore command |
-| `cmd/bootstrap/main.go` | ✅ | Bootstrap binary |
-| `cmd/backupd/main.go` | ✅ | Backupd daemon |
+| `cmd/p2pbk/cmd_bootstrap.go` | ✅ | Hidden bootstrap subcommand |
+| `cmd/p2pbk/cmd_daemon.go` | ✅ | Hidden background service subcommand |
 | `internal/config/config.go` | ✅ | Config loader |
 | `internal/peer/localdb/localdb.go` | ✅ | BoltDB with persistence |
 | `internal/peer/quota/quota.go` | ✅ | Quota manager |
@@ -124,14 +124,14 @@ p2pbk is a distributed backup system using erasure coding, libp2p networking, an
 3. Complete quota persistence in localdb
 4. Add self-heal integration with localdb
 5. Implement challenge issuer
-6. Add backupd/backup command implementation
+6. Complete background scheduling for configured backup policies
 
 ## Usage Examples
 
 ### Initialize a node
 
 ```bash
-p2pbk init ~/.p2pbk
+p2pbk init --dir /path/to/files --max-space 10GB --offer-space 20GB
 p2pbk status
 ```
 
@@ -147,16 +147,16 @@ p2pbk add /path/to/files
 p2pbk status --long
 ```
 
-### Start backupd daemon
+### Start background service explicitly
 
 ```bash
-backupd config.yaml
+p2pbk --config config.json daemon
 ```
 
 ### Bootstrap peer
 
 ```bash
-bootstrap config.yaml
+p2pbk --config config.json bootstrap
 ```
 
 ## License

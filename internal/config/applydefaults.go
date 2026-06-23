@@ -29,6 +29,11 @@ func applyDefaults(v *viper.Viper) {
 	v.SetDefault("backup.data_shards", 6)
 	v.SetDefault("backup.parity_shards", 3)
 	v.SetDefault("backup.roots", []string{})
+	v.SetDefault("backup.max_bytes", int64(10<<30))
+	v.SetDefault("backup.schedule", "daily")
+	v.SetDefault("backup.retention", "30d")
+	v.SetDefault("backup.initial_full", true)
+	v.SetDefault("backup.incremental", true)
 
 	v.SetDefault("trust.challenge_interval", time.Hour)
 	v.SetDefault("trust.reputation_window", 30*24*time.Hour)

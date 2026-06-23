@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -21,10 +22,15 @@ func newRootCommand() *cobra.Command {
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			if configPath != "" {
 				viper.SetConfigFile(configPath)
+				activeConfigPath = configPath
+				if cmd.CommandPath() == "p2pbk init" {
+					if _, err := os.Stat(configPath); os.IsNotExist(err) {
+						return nil
+					}
+				}
 				if err := viper.ReadInConfig(); err != nil {
 					return fmt.Errorf("read config: %w", err)
 				}
-				activeConfigPath = configPath
 			}
 			return nil
 		},
@@ -40,6 +46,8 @@ func newRootCommand() *cobra.Command {
 	cmd.AddCommand(newRestoreCommand())
 	cmd.AddCommand(newRepoCommand())
 	cmd.AddCommand(newSnapshotCommand())
+	cmd.AddCommand(newDaemonCommand())
+	cmd.AddCommand(newBootstrapCommand())
 
 	cmd.AddCommand(&cobra.Command{
 		Use:   "version",

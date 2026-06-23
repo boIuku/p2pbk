@@ -1,11 +1,11 @@
 [Unit]
-Description=p2pbk backup daemon
+Description=p2pbk background service
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/backupd /etc/p2pbk/config.yaml
+ExecStart=/usr/local/bin/p2pbk --config /etc/p2pbk/config.json daemon
 Restart=on-failure
 RestartSec=5s
 User=p2pbk

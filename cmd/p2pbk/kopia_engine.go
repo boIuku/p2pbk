@@ -30,7 +30,7 @@ func currentConfigPath(cfg config.Config) string {
 	if err != nil {
 		return ""
 	}
-	candidate := filepath.Join(paths.DataDir, "config.yaml")
+	candidate := filepath.Join(paths.DataDir, "config.json")
 	if _, err := os.Stat(candidate); err == nil {
 		return candidate
 	}

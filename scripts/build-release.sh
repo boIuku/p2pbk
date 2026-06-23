@@ -8,5 +8,3 @@ LDFLAGS="-X p2pbk/internal/version.Version=${VERSION} -X p2pbk/internal/version.
 
 mkdir -p dist
 go build -ldflags "$LDFLAGS" -o dist/p2pbk ./cmd/p2pbk
-go build -ldflags "$LDFLAGS" -o dist/backupd ./cmd/backupd
-go build -ldflags "$LDFLAGS" -o dist/bootstrap ./cmd/bootstrap

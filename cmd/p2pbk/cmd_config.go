@@ -1,12 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"gopkg.in/yaml.v3"
 
 	"p2pbk/internal/config"
 )
@@ -49,7 +49,7 @@ func newConfigCommand() *cobra.Command {
 					if err != nil {
 						return err
 					}
-					path = paths.DataDir + "/config.yaml"
+					path = paths.DataDir + "/config.json"
 				}
 				if err := saveConfigFile(cfg, path); err != nil {
 					return err
@@ -71,6 +71,10 @@ func newConfigCommand() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "Offer bytes: %d\n", cfg.Storage.OfferBytes)
 			fmt.Fprintf(cmd.OutOrStdout(), "Protocol: %s\n", cfg.Network.ProtocolID)
 			fmt.Fprintf(cmd.OutOrStdout(), "Min peers: %d\n", cfg.Network.MinPeers)
+			fmt.Fprintf(cmd.OutOrStdout(), "Protected roots: %v\n", cfg.Backup.Roots)
+			fmt.Fprintf(cmd.OutOrStdout(), "Max protected data: %d bytes\n", cfg.Backup.MaxBytes)
+			fmt.Fprintf(cmd.OutOrStdout(), "Schedule: %s\n", cfg.Backup.Schedule)
+			fmt.Fprintf(cmd.OutOrStdout(), "Retention: %s\n", cfg.Backup.Retention)
 			fmt.Fprintf(cmd.OutOrStdout(), "Data shards: %d\n", cfg.Backup.DataShards)
 			fmt.Fprintf(cmd.OutOrStdout(), "Parity shards: %d\n", cfg.Backup.ParityShards)
 			fmt.Fprintf(cmd.OutOrStdout(), "Challenge interval: %s\n", cfg.Trust.ChallengeInterval)
@@ -88,10 +92,11 @@ func newConfigCommand() *cobra.Command {
 }
 
 func saveConfigFile(cfg config.Config, path string) error {
-	data, err := yaml.Marshal(cfg)
+	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
+	data = append(data, '\n')
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return err
 	}
@@ -105,7 +110,7 @@ func loadConfigFile(path string) (config.Config, error) {
 	}
 
 	var cfg config.Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := json.Unmarshal(data, &cfg); err != nil {
 		return config.Config{}, err
 	}
 
@@ -124,8 +129,24 @@ func applyConfigSet(cfg *config.Config, key, value string) error {
 		cfg.Storage.StoreDir = value
 	case "storage.cache_dir":
 		cfg.Storage.CacheDir = value
+	case "storage.offer_bytes":
+		n, err := parseByteSize(value)
+		if err != nil {
+			return err
+		}
+		cfg.Storage.OfferBytes = n
 	case "network.protocol_id":
 		cfg.Network.ProtocolID = value
+	case "backup.max_bytes":
+		n, err := parseByteSize(value)
+		if err != nil {
+			return err
+		}
+		cfg.Backup.MaxBytes = n
+	case "backup.schedule":
+		cfg.Backup.Schedule = value
+	case "backup.retention":
+		cfg.Backup.Retention = value
 	case "trust.challenge_interval":
 		cfg.Trust.ChallengeInterval = value
 	case "trust.reputation_window":

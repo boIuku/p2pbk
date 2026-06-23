@@ -23,8 +23,59 @@ Stage 1 scaffold is in place:
 
 The next stage should add durable identity management and local bbolt state.
 
+## Usage model
+
+p2pbk is distributed as one user-facing binary:
+
+```bash
+p2pbk
+```
+
+The normal first command is `init`. It creates identity and local state,
+writes a JSON config file, records backup policy, and starts p2pbk in the
+background unless `--start=false` is provided:
+
+```bash
+p2pbk init --dir ~/Documents --max-space 10GB --offer-space 20GB --schedule daily
+```
+
+For 10GB of protected data, the default 6+3 erasure policy stores about 15GB
+across peers, plus metadata and cache overhead. Detailed settings are available
+in `config.json`.
+
+Day-to-day commands stay user-facing:
+
+```bash
+p2pbk status
+p2pbk backup now
+p2pbk restore latest ./restore
+```
+
+The background peer is an implementation detail exposed as a hidden/advanced
+subcommand for containers and operators:
+
+```bash
+p2pbk --config /etc/p2pbk/config.json daemon
+```
+
+Bootstrap/discovery mode is also part of the same binary:
+
+```bash
+p2pbk --config /etc/p2pbk/config.json bootstrap
+```
+
+Docker images run the same `p2pbk` binary. Compose-based integration tests will
+use that surface rather than scripts.
+
 ## Development
 
 ```powershell
 go test ./...
+```
+
+Docker integration tests are driven from Go and skipped by default:
+
+```powershell
+$env:P2PBK_DOCKER_E2E="1"
+go test ./test/integration -run TestDockerE2EBackupRestore -v
 ```

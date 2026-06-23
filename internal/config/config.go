@@ -11,44 +11,49 @@ import (
 
 // Config contains all user-tunable settings for a p2pbk node.
 type Config struct {
-	Node    NodeConfig    `mapstructure:"node"`
-	Storage StorageConfig `mapstructure:"storage"`
-	Network NetworkConfig `mapstructure:"network"`
-	Backup  BackupConfig  `mapstructure:"backup"`
-	Trust   TrustConfig   `mapstructure:"trust"`
+	Node    NodeConfig    `mapstructure:"node" json:"node"`
+	Storage StorageConfig `mapstructure:"storage" json:"storage"`
+	Network NetworkConfig `mapstructure:"network" json:"network"`
+	Backup  BackupConfig  `mapstructure:"backup" json:"backup"`
+	Trust   TrustConfig   `mapstructure:"trust" json:"trust"`
 }
 
 type NodeConfig struct {
-	DataDir     string `mapstructure:"data_dir"`
-	Identity    string `mapstructure:"identity"`
-	DisplayName string `mapstructure:"display_name"`
+	DataDir     string `mapstructure:"data_dir" json:"data_dir"`
+	Identity    string `mapstructure:"identity" json:"identity"`
+	DisplayName string `mapstructure:"display_name" json:"display_name"`
 }
 
 type StorageConfig struct {
-	StoreDir       string `mapstructure:"store_dir"`
-	CacheDir       string `mapstructure:"cache_dir"`
-	CacheSizeBytes int64  `mapstructure:"cache_size_bytes"`
-	OfferBytes     int64  `mapstructure:"offer_bytes"`
+	StoreDir       string `mapstructure:"store_dir" json:"store_dir"`
+	CacheDir       string `mapstructure:"cache_dir" json:"cache_dir"`
+	CacheSizeBytes int64  `mapstructure:"cache_size_bytes" json:"cache_size_bytes"`
+	OfferBytes     int64  `mapstructure:"offer_bytes" json:"offer_bytes"`
 }
 
 type NetworkConfig struct {
-	ListenAddrs    []string `mapstructure:"listen_addrs"`
-	BootstrapPeers []string `mapstructure:"bootstrap_peers"`
-	ProtocolID     string   `mapstructure:"protocol_id"`
-	MinPeers       int      `mapstructure:"min_peers"`
+	ListenAddrs    []string `mapstructure:"listen_addrs" json:"listen_addrs"`
+	BootstrapPeers []string `mapstructure:"bootstrap_peers" json:"bootstrap_peers"`
+	ProtocolID     string   `mapstructure:"protocol_id" json:"protocol_id"`
+	MinPeers       int      `mapstructure:"min_peers" json:"min_peers"`
 }
 
 type BackupConfig struct {
-	DataShards   int      `mapstructure:"data_shards"`
-	ParityShards int      `mapstructure:"parity_shards"`
-	Roots        []string `mapstructure:"roots"`
+	DataShards   int      `mapstructure:"data_shards" json:"data_shards"`
+	ParityShards int      `mapstructure:"parity_shards" json:"parity_shards"`
+	Roots        []string `mapstructure:"roots" json:"roots"`
+	MaxBytes     int64    `mapstructure:"max_bytes" json:"max_bytes"`
+	Schedule     string   `mapstructure:"schedule" json:"schedule"`
+	Retention    string   `mapstructure:"retention" json:"retention"`
+	InitialFull  bool     `mapstructure:"initial_full" json:"initial_full"`
+	Incremental  bool     `mapstructure:"incremental" json:"incremental"`
 }
 
 type TrustConfig struct {
-	ChallengeInterval    string `mapstructure:"challenge_interval"`
-	ReputationWindow     string `mapstructure:"reputation_window"`
-	ChallengeMaxLength   int64  `mapstructure:"challenge_max_length"`
-	IdentityPassphrase   string `mapstructure:"identity_passphrase"`
+	ChallengeInterval  string `mapstructure:"challenge_interval" json:"challenge_interval"`
+	ReputationWindow   string `mapstructure:"reputation_window" json:"reputation_window"`
+	ChallengeMaxLength int64  `mapstructure:"challenge_max_length" json:"challenge_max_length"`
+	IdentityPassphrase string `mapstructure:"identity_passphrase" json:"identity_passphrase"`
 }
 
 // Load reads config from path, applies defaults, and validates.
@@ -56,7 +61,6 @@ func Load(path string) (Config, error) {
 	v := viper.New()
 	applyDefaults(v)
 
-	v.SetConfigType("yaml")
 	v.SetEnvPrefix("P2PBK")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
@@ -107,10 +111,10 @@ func FromViper(v *viper.Viper) Config {
 			DisplayName: v.GetString("node.display_name"),
 		},
 		Storage: StorageConfig{
-			StoreDir:     v.GetString("storage.store_dir"),
-			CacheDir:     v.GetString("storage.cache_dir"),
+			StoreDir:       v.GetString("storage.store_dir"),
+			CacheDir:       v.GetString("storage.cache_dir"),
 			CacheSizeBytes: v.GetInt64("storage.cache_size_bytes"),
-			OfferBytes:   v.GetInt64("storage.offer_bytes"),
+			OfferBytes:     v.GetInt64("storage.offer_bytes"),
 		},
 		Network: NetworkConfig{
 			ListenAddrs:    v.GetStringSlice("network.listen_addrs"),
@@ -122,18 +126,22 @@ func FromViper(v *viper.Viper) Config {
 			DataShards:   v.GetInt("backup.data_shards"),
 			ParityShards: v.GetInt("backup.parity_shards"),
 			Roots:        v.GetStringSlice("backup.roots"),
+			MaxBytes:     v.GetInt64("backup.max_bytes"),
+			Schedule:     v.GetString("backup.schedule"),
+			Retention:    v.GetString("backup.retention"),
+			InitialFull:  v.GetBool("backup.initial_full"),
+			Incremental:  v.GetBool("backup.incremental"),
 		},
 		Trust: TrustConfig{
-			ChallengeInterval:   v.GetString("trust.challenge_interval"),
-			ReputationWindow:    v.GetString("trust.reputation_window"),
-			ChallengeMaxLength:  v.GetInt64("trust.challenge_max_length"),
-			IdentityPassphrase:  v.GetString("trust.identity_passphrase"),
+			ChallengeInterval:  v.GetString("trust.challenge_interval"),
+			ReputationWindow:   v.GetString("trust.reputation_window"),
+			ChallengeMaxLength: v.GetInt64("trust.challenge_max_length"),
+			IdentityPassphrase: v.GetString("trust.identity_passphrase"),
 		},
 	}
 
 	return cfg
 }
-
 
 // Validate checks cross-field and range constraints.
 func (c Config) Validate() error {
@@ -165,6 +173,12 @@ func (c Config) Validate() error {
 	}
 	if c.Backup.ParityShards <= 0 {
 		errs = append(errs, errors.New("backup.parity_shards must be positive"))
+	}
+	if c.Backup.MaxBytes < 0 {
+		errs = append(errs, errors.New("backup.max_bytes must be non-negative"))
+	}
+	if c.Backup.Schedule == "" {
+		errs = append(errs, errors.New("backup.schedule is required"))
 	}
 	if c.Trust.ChallengeMaxLength <= 0 {
 		errs = append(errs, errors.New("trust.challenge_max_length must be positive"))

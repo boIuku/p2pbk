@@ -44,10 +44,10 @@ func newAddCommand() *cobra.Command {
 			// Check backup options
 			backupCfg := cfg.Backup
 			if backupCfg.DataShards == 0 {
-				return fmt.Errorf("data_shards must be set in config.yaml")
+				return fmt.Errorf("data_shards must be set in config.json")
 			}
 			if backupCfg.ParityShards == 0 {
-				return fmt.Errorf("parity_shards must be set in config.yaml")
+				return fmt.Errorf("parity_shards must be set in config.json")
 			}
 
 			// Create codec for erasure coding

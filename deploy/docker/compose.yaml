@@ -3,27 +3,27 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
-    command: ["/etc/p2pbk/config.yaml"]
+    command: ["--config", "/etc/p2pbk/config.json", "bootstrap"]
     volumes:
-      - ./bootstrap.yaml:/etc/p2pbk/config.yaml:ro
+      - ./bootstrap.json:/etc/p2pbk/config.json:ro
   node1:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
-    command: ["/etc/p2pbk/config.yaml"]
+    command: ["--config", "/etc/p2pbk/config.json", "daemon"]
     volumes:
-      - ./node1.yaml:/etc/p2pbk/config.yaml:ro
+      - ./node1.json:/etc/p2pbk/config.json:ro
   node2:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
-    command: ["/etc/p2pbk/config.yaml"]
+    command: ["--config", "/etc/p2pbk/config.json", "daemon"]
     volumes: 
-      - ./node2.yaml:/etc/p2pbk/config.yaml:ro
+      - ./node2.json:/etc/p2pbk/config.json:ro
   node3:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
-    command: ["/etc/p2pbk/config.yaml"]
+    command: ["--config", "/etc/p2pbk/config.json", "daemon"]
     volumes:
-      - ./node3.yaml:/etc/p2pbk/config.yaml:ro
+      - ./node3.json:/etc/p2pbk/config.json:ro

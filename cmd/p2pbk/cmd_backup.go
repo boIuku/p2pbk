@@ -16,15 +16,29 @@ func newBackupCommand() *cobra.Command {
 	opts := backupOptions{}
 
 	cmd := &cobra.Command{
-		Use:   "backup <source> <target>",
-		Short: "Backup data from source to a Kopia repository on p2pbk storage",
+		Use:   "backup now|<source> <description>",
+		Short: "Run an on-demand backup",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) < 2 {
-				return fmt.Errorf("usage: p2pbk backup <source> <target>")
-			}
 			engine, err := openKopiaEngine()
 			if err != nil {
 				return err
+			}
+			if len(args) == 1 && args[0] == "now" {
+				cfg := currentConfig()
+				if len(cfg.Backup.Roots) == 0 {
+					return fmt.Errorf("no backup roots configured; run p2pbk init --dir <path> or set backup.roots")
+				}
+				for _, root := range cfg.Backup.Roots {
+					result, err := engine.Backup(context.Background(), root, "manual")
+					if err != nil {
+						return err
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "snapshot %s saved for %s\n", result.ManifestID, result.Source)
+				}
+				return nil
+			}
+			if len(args) < 2 {
+				return fmt.Errorf("usage: p2pbk backup now OR p2pbk backup <source> <description>")
 			}
 			result, err := engine.Backup(context.Background(), args[0], args[1])
 			if err != nil {
