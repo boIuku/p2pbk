@@ -64,6 +64,10 @@ func Open(path string) (*DB, error) {
 	return wrapped, nil
 }
 
+func IsOpenTimeout(err error) bool {
+	return errors.Is(err, bbolt.ErrTimeout)
+}
+
 func (db *DB) Close() error {
 	if db == nil || db.DB == nil {
 		return nil

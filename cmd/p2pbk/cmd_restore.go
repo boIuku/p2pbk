@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
+
+	"p2pbk/internal/app"
 )
 
 type restoreOptions struct {
@@ -22,15 +25,18 @@ func newRestoreCommand() *cobra.Command {
 			if len(args) < 2 {
 				return fmt.Errorf("usage: p2pbk restore <snapshot-id|latest> <target>")
 			}
-			engine, err := openKopiaEngine()
+			cfg := currentConfig()
+			result, err := app.RestoreSnapshot(context.Background(), app.RestoreRequest{
+				Config:     cfg,
+				ConfigPath: currentConfigPath(cfg),
+				Password:   os.Getenv("P2PBK_REPOSITORY_PASSWORD"),
+				Snapshot:   args[0],
+				Target:     args[1],
+			})
 			if err != nil {
 				return err
 			}
-			result, err := engine.Restore(context.Background(), args[0], args[1])
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "restored snapshot %s: %d file(s), %d dir(s)\n", result.ManifestID, result.Stats.RestoredFileCount, result.Stats.RestoredDirCount)
+			fmt.Fprintf(cmd.OutOrStdout(), "restored snapshot %s: %d file(s), %d dir(s)\n", result.ManifestID, result.Files, result.Dirs)
 			return nil
 		},
 	}

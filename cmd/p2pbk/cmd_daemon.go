@@ -163,7 +163,9 @@ func startDaemonDiscovery(ctx context.Context, cfg config.Config, runtime *daemo
 	if !cfg.Network.EnableLocalDiscovery {
 		return nil, nil
 	}
-	localDiscovery, err := p2pdiscovery.StartLocal(ctx, runtime.host, runtime.db, cfg.Network.LocalDiscoveryService)
+	localDiscovery, err := p2pdiscovery.StartLocalWithOptions(ctx, runtime.host, runtime.db, cfg.Network.LocalDiscoveryService, p2pdiscovery.WithObserver(func(event p2pdiscovery.Event) {
+		writeDiscoveryEvent(out, event)
+	}))
 	if err != nil {
 		fmt.Fprintf(out, "local discovery unavailable: %v\n", err)
 		return nil, nil
@@ -172,13 +174,32 @@ func startDaemonDiscovery(ctx context.Context, cfg config.Config, runtime *daemo
 	return localDiscovery, nil
 }
 
+func writeDiscoveryEvent(out interface{ Write([]byte) (int, error) }, event p2pdiscovery.Event) {
+	source := event.Source
+	if source == "" {
+		source = "unknown"
+	}
+	switch event.Type {
+	case p2pdiscovery.EventFound:
+		fmt.Fprintf(out, "local discovery found (%s): %s\n", source, event.PeerID)
+	case p2pdiscovery.EventConnected:
+		fmt.Fprintf(out, "local discovery connected (%s): %s\n", source, event.PeerID)
+	case p2pdiscovery.EventSaved:
+		fmt.Fprintf(out, "local discovery saved (%s): %s\n", source, event.PeerID)
+	case p2pdiscovery.EventConnectFailed:
+		fmt.Fprintf(out, "local discovery connect failed (%s): %s: %v\n", source, event.PeerID, event.Err)
+	case p2pdiscovery.EventSaveFailed:
+		fmt.Fprintf(out, "local discovery save failed (%s): %s: %v\n", source, event.PeerID, event.Err)
+	}
+}
+
 func writeDaemonStartup(out interface{ Write([]byte) (int, error) }, runtime *daemonRuntime, connected []peer.AddrInfo) {
 	fmt.Fprintf(out, "p2pbk peer: %s\n", runtime.host.ID())
 	for _, addr := range runtime.host.Addrs() {
 		fmt.Fprintf(out, "listening: %s/p2p/%s\n", addr, runtime.host.ID())
 	}
 	for _, peer := range connected {
-		fmt.Fprintf(out, "connected bootstrap: %s\n", peer.ID)
+		fmt.Fprintf(out, "connected peer: %s\n", peer.ID)
 	}
 	fmt.Fprintf(out, "store: %s\n", filepath.Clean(runtime.paths.StoreDir))
 }

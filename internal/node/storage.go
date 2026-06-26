@@ -34,7 +34,11 @@ func OpenDistributedStorage(ctx context.Context, cfg config.Config, h corehost.H
 	}
 	store, closeStore, err := openPeerStore(cfg)
 	if err != nil {
-		return nil, err
+		if !localdb.IsOpenTimeout(err) {
+			return nil, err
+		}
+		store = nil
+		closeStore = func() {}
 	}
 
 	if _, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, h, cfg.Network.BootstrapPeers, store); err != nil {
@@ -80,7 +84,11 @@ func OpenDistributedStorageWithLocator(ctx context.Context, cfg config.Config, h
 
 	store, closeStore, err := openPeerStore(cfg)
 	if err != nil {
-		return nil, nil, err
+		if !localdb.IsOpenTimeout(err) {
+			return nil, nil, err
+		}
+		store = nil
+		closeStore = func() {}
 	}
 	defer closeStore()
 

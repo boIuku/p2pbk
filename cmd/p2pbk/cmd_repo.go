@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
+	"p2pbk/internal/app"
 	"p2pbk/internal/kopiaengine"
 )
 
@@ -21,14 +22,12 @@ func newRepoCommand() *cobra.Command {
 		Use:   "init",
 		Short: "Initialize and connect the Kopia repository",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			engine, err := openKopiaEngine()
+			cfg := currentConfig()
+			path, err := app.EnsureRepository(context.Background(), cfg, currentConfigPath(cfg), os.Getenv("P2PBK_REPOSITORY_PASSWORD"))
 			if err != nil {
 				return err
 			}
-			if err := engine.EnsureRepository(context.Background()); err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "repository ready: %s\n", engine.RepositoryConfigPath())
+			fmt.Fprintf(cmd.OutOrStdout(), "repository ready: %s\n", path)
 			return nil
 		},
 	})
@@ -37,14 +36,12 @@ func newRepoCommand() *cobra.Command {
 		Use:   "connect",
 		Short: "Connect local Kopia config to the p2pbk repository",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			engine, err := openKopiaEngine()
+			cfg := currentConfig()
+			path, err := app.EnsureRepository(context.Background(), cfg, currentConfigPath(cfg), os.Getenv("P2PBK_REPOSITORY_PASSWORD"))
 			if err != nil {
 				return err
 			}
-			if err := engine.EnsureRepository(context.Background()); err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "repository connected: %s\n", engine.RepositoryConfigPath())
+			fmt.Fprintf(cmd.OutOrStdout(), "repository connected: %s\n", path)
 			return nil
 		},
 	})
@@ -53,19 +50,16 @@ func newRepoCommand() *cobra.Command {
 		Use:   "status",
 		Short: "Show Kopia repository status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			engine, err := openExistingKopiaEngine()
-			if err != nil {
-				return friendlyRepositoryError(err)
-			}
-			status, err := engine.Status(context.Background())
+			cfg := currentConfig()
+			status, err := app.GetRepositoryStatus(context.Background(), cfg, currentConfigPath(cfg), os.Getenv("P2PBK_REPOSITORY_PASSWORD"))
 			if err != nil {
 				return friendlyRepositoryError(err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "config: %s\n", status.ConfigPath)
 			fmt.Fprintf(cmd.OutOrStdout(), "storage: %s\n", status.StorageType)
 			fmt.Fprintf(cmd.OutOrStdout(), "snapshots: %d\n", status.SnapshotCount)
-			if len(status.UniqueID) > 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), "unique_id: %s\n", hex.EncodeToString(status.UniqueID))
+			if status.UniqueID != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "unique_id: %s\n", status.UniqueID)
 			}
 			return nil
 		},
@@ -75,11 +69,8 @@ func newRepoCommand() *cobra.Command {
 		Use:   "maintenance",
 		Short: "Show Kopia maintenance schedule",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			engine, err := openExistingKopiaEngine()
-			if err != nil {
-				return friendlyRepositoryError(err)
-			}
-			status, err := engine.MaintenanceStatus(context.Background())
+			cfg := currentConfig()
+			status, err := app.GetMaintenanceStatus(context.Background(), cfg, currentConfigPath(cfg), os.Getenv("P2PBK_REPOSITORY_PASSWORD"))
 			if err != nil {
 				return friendlyRepositoryError(err)
 			}

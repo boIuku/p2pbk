@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"p2pbk/internal/app"
 	"p2pbk/internal/config"
 )
 
@@ -40,7 +41,7 @@ func newConfigCommand() *cobra.Command {
 				if opts.setValue == "" {
 					return fmt.Errorf("--value is required with --set")
 				}
-				if err := applyConfigSet(&cfg, opts.setKey, opts.setValue); err != nil {
+				if err := app.ApplyConfigSet(&cfg, opts.setKey, opts.setValue); err != nil {
 					return err
 				}
 				path := viper.ConfigFileUsed()
@@ -51,36 +52,35 @@ func newConfigCommand() *cobra.Command {
 					}
 					path = paths.DataDir + "/config.json"
 				}
-				if err := saveConfigFile(cfg, path); err != nil {
+				if err := app.SaveConfig(cfg, path); err != nil {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "updated %s\n", path)
 				return nil
 			}
 
-			paths, err := cfg.Paths()
+			summary, err := app.SummarizeConfig(cfg, configFileUsed())
 			if err != nil {
 				return err
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Current configuration:\n")
-			fmt.Fprintf(cmd.OutOrStdout(), "Data dir: %s\n", paths.DataDir)
-			fmt.Fprintf(cmd.OutOrStdout(), "Store dir: %s\n", paths.StoreDir)
-			fmt.Fprintf(cmd.OutOrStdout(), "Cache dir: %s\n", paths.CacheDir)
-			fmt.Fprintf(cmd.OutOrStdout(), "Cache size: %d bytes\n", cfg.Storage.CacheSizeBytes)
-			fmt.Fprintf(cmd.OutOrStdout(), "Offer bytes: %d\n", cfg.Storage.OfferBytes)
-			fmt.Fprintf(cmd.OutOrStdout(), "Protocol: %s\n", cfg.Network.ProtocolID)
-			fmt.Fprintf(cmd.OutOrStdout(), "Min peers: %d\n", cfg.Network.MinPeers)
-			fmt.Fprintf(cmd.OutOrStdout(), "Local discovery: %t\n", cfg.Network.EnableLocalDiscovery)
-			fmt.Fprintf(cmd.OutOrStdout(), "Local discovery service: %s\n", cfg.Network.LocalDiscoveryService)
-			fmt.Fprintf(cmd.OutOrStdout(), "Protected roots: %v\n", cfg.Backup.Roots)
-			fmt.Fprintf(cmd.OutOrStdout(), "Max protected data: %d bytes\n", cfg.Backup.MaxBytes)
-			fmt.Fprintf(cmd.OutOrStdout(), "Schedule: %s\n", cfg.Backup.Schedule)
-			fmt.Fprintf(cmd.OutOrStdout(), "Retention: %s\n", cfg.Backup.Retention)
-			fmt.Fprintf(cmd.OutOrStdout(), "Data shards: %d\n", cfg.Backup.DataShards)
-			fmt.Fprintf(cmd.OutOrStdout(), "Parity shards: %d\n", cfg.Backup.ParityShards)
-			fmt.Fprintf(cmd.OutOrStdout(), "Challenge interval: %s\n", cfg.Trust.ChallengeInterval)
-			fmt.Fprintf(cmd.OutOrStdout(), "Reputation window: %s\n", cfg.Trust.ReputationWindow)
+			fmt.Fprintf(cmd.OutOrStdout(), "Data dir: %s\n", summary.DataDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "Store dir: %s\n", summary.StoreDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "Cache dir: %s\n", summary.CacheDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "Offer bytes: %d\n", summary.OfferBytes)
+			fmt.Fprintf(cmd.OutOrStdout(), "Protocol: %s\n", summary.ProtocolID)
+			fmt.Fprintf(cmd.OutOrStdout(), "Min peers: %d\n", summary.MinPeers)
+			fmt.Fprintf(cmd.OutOrStdout(), "Local discovery: %t\n", summary.LocalDiscovery)
+			fmt.Fprintf(cmd.OutOrStdout(), "Local discovery service: %s\n", summary.LocalDiscoveryService)
+			fmt.Fprintf(cmd.OutOrStdout(), "Protected roots: %v\n", summary.ProtectedRoots)
+			fmt.Fprintf(cmd.OutOrStdout(), "Max protected data: %d bytes\n", summary.MaxProtectedBytes)
+			fmt.Fprintf(cmd.OutOrStdout(), "Schedule: %s\n", summary.Schedule)
+			fmt.Fprintf(cmd.OutOrStdout(), "Retention: %s\n", summary.Retention)
+			fmt.Fprintf(cmd.OutOrStdout(), "Data shards: %d\n", summary.DataShards)
+			fmt.Fprintf(cmd.OutOrStdout(), "Parity shards: %d\n", summary.ParityShards)
+			fmt.Fprintf(cmd.OutOrStdout(), "Challenge interval: %s\n", summary.ChallengeInterval)
+			fmt.Fprintf(cmd.OutOrStdout(), "Reputation window: %s\n", summary.ReputationWindow)
 
 			return nil
 		},

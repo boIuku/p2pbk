@@ -7,9 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"p2pbk/internal/audit"
-	p2phost "p2pbk/internal/network/host"
-	"p2pbk/internal/peer/localdb"
+	"p2pbk/internal/app"
 )
 
 func newAuditCommand() *cobra.Command {
@@ -27,36 +25,11 @@ func newAuditCommand() *cobra.Command {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			cfg := currentConfig()
-			paths, err := cfg.Paths()
+			result, err := app.RunAudit(ctx, app.AuditRequest{Config: currentConfig(), Limit: limit, Timeout: timeout})
 			if err != nil {
 				return err
 			}
-			db, err := localdb.Open(paths.LocalDB)
-			if err != nil {
-				return err
-			}
-			defer db.Close()
-
-			host, err := p2phost.New(ctx, p2phost.Options{ListenAddrs: cfg.Network.ListenAddrs})
-			if err != nil {
-				return err
-			}
-			defer host.Close()
-
-			summary, err := audit.RunOnce(ctx, audit.Options{
-				Config:         cfg,
-				Host:           host,
-				DB:             db,
-				Output:         cmd.OutOrStdout(),
-				Limit:          limit,
-				ConnectTimeout: timeout,
-				ShardTimeout:   timeout,
-			})
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "audit summary: checked=%d ok=%d failed=%d\n", summary.Checked, summary.Succeeded, summary.Failed)
+			fmt.Fprint(cmd.OutOrStdout(), result.Output)
 			return nil
 		},
 	}

@@ -20,6 +20,9 @@ func newPeersCommand() *cobra.Command {
 			}
 			db, err := localdb.Open(paths.LocalDB)
 			if err != nil {
+				if localdb.IsOpenTimeout(err) {
+					return fmt.Errorf("localdb is locked by the running daemon; peer discovery is still handled by the daemon, or stop the daemon before listing peers directly: %w", err)
+				}
 				return err
 			}
 			defer db.Close()

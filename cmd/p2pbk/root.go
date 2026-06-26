@@ -46,6 +46,7 @@ func newRootCommand() *cobra.Command {
 
 	cmd.AddCommand(newInitCommand())
 	cmd.AddCommand(newStatusCommand())
+	cmd.AddCommand(newTUICommand())
 	cmd.AddCommand(newConfigCommand())
 	cmd.AddCommand(newAddCommand())
 	cmd.AddCommand(newBackupCommand())

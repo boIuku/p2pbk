@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
+
+	"p2pbk/internal/app"
 )
 
 type backupOptions struct {
@@ -19,20 +22,15 @@ func newBackupCommand() *cobra.Command {
 		Use:   "backup now|<source> <description>",
 		Short: "Run an on-demand backup",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			engine, err := openKopiaEngine()
-			if err != nil {
-				return err
-			}
+			cfg := currentConfig()
+			configPath := currentConfigPath(cfg)
+			password := os.Getenv("P2PBK_REPOSITORY_PASSWORD")
 			if len(args) == 1 && args[0] == "now" {
-				cfg := currentConfig()
-				if len(cfg.Backup.Roots) == 0 {
-					return fmt.Errorf("no backup roots configured; run p2pbk init --dir <path> or set backup.roots")
+				results, err := app.BackupAll(context.Background(), cfg, configPath, password, "manual")
+				if err != nil {
+					return err
 				}
-				for _, root := range cfg.Backup.Roots {
-					result, err := engine.Backup(context.Background(), root, "manual")
-					if err != nil {
-						return err
-					}
+				for _, result := range results {
 					fmt.Fprintf(cmd.OutOrStdout(), "snapshot %s saved for %s\n", result.ManifestID, result.Source)
 				}
 				return nil
@@ -40,7 +38,13 @@ func newBackupCommand() *cobra.Command {
 			if len(args) < 2 {
 				return fmt.Errorf("usage: p2pbk backup now OR p2pbk backup <source> <description>")
 			}
-			result, err := engine.Backup(context.Background(), args[0], args[1])
+			result, err := app.BackupRoot(context.Background(), app.BackupRequest{
+				Config:      cfg,
+				ConfigPath:  configPath,
+				Password:    password,
+				Source:      args[0],
+				Description: args[1],
+			})
 			if err != nil {
 				return err
 			}

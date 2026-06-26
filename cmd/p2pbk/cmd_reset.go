@@ -79,6 +79,9 @@ func runReset(cfg config.Config, configPath string, opts resetOptions, out io.Wr
 }
 
 func enforceStorageResetPolicy(storeDir, dataDir string, roots []string, opts resetOptions) error {
+	if !isUnder(storeDir, dataDir) {
+		return nil
+	}
 	storeHasData, err := dirHasEntries(storeDir)
 	if err != nil {
 		return fmt.Errorf("inspect store dir %s: %w", storeDir, err)

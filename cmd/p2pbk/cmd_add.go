@@ -2,14 +2,10 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 
-	"p2pbk/internal/backend/p2p/erasure"
-	"p2pbk/internal/config"
-	"p2pbk/internal/peer/blobserver"
+	"p2pbk/internal/app"
 )
 
 type addOptions struct {
@@ -25,40 +21,14 @@ func newAddCommand() *cobra.Command {
 				return fmt.Errorf("usage: p2pbk add <path> [-- config-path <path>]")
 			}
 
-			cfg := config.FromViper(viper.GetViper())
-
-			paths, err := cfg.Paths()
+			cfg, err := app.AddAsset(currentConfig(), configFileUsed(), args[0])
 			if err != nil {
 				return err
 			}
 
-			// Check if path exists
-			if _, err := os.Stat(args[0]); os.IsNotExist(err) {
-				return fmt.Errorf("path %q does not exist", args[0])
-			}
-
-			// Initialize local blobserver for storing shards
-			if _, err := blobserver.New(paths.StoreDir); err != nil {
-				return fmt.Errorf("initialize blobserver: %w", err)
-			}
-			// Check backup options
-			backupCfg := cfg.Backup
-			if backupCfg.DataShards == 0 {
-				return fmt.Errorf("data_shards must be set in config.json")
-			}
-			if backupCfg.ParityShards == 0 {
-				return fmt.Errorf("parity_shards must be set in config.json")
-			}
-
-			// Create codec for erasure coding
-			_, err = erasure.New(backupCfg.DataShards, backupCfg.ParityShards)
-			if err != nil {
-				return fmt.Errorf("create codec: %w", err)
-			}
-
-			fmt.Printf("Added %s for backup\n", args[0])
-			fmt.Printf("  data_shards: %d\n", backupCfg.DataShards)
-			fmt.Printf("  parity_shards: %d\n", backupCfg.ParityShards)
+			fmt.Fprintf(cmd.OutOrStdout(), "Added %s for backup\n", args[0])
+			fmt.Fprintf(cmd.OutOrStdout(), "  data_shards: %d\n", cfg.Backup.DataShards)
+			fmt.Fprintf(cmd.OutOrStdout(), "  parity_shards: %d\n", cfg.Backup.ParityShards)
 
 			return nil
 		},

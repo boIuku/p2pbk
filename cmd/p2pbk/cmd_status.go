@@ -1,16 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	"p2pbk/internal/kopiaengine"
-	"p2pbk/internal/peer/localdb"
-	"p2pbk/internal/scheduler"
+	"p2pbk/internal/app"
 )
 
 type statusOptions struct {
@@ -25,70 +22,58 @@ func newStatusCommand() *cobra.Command {
 		Short: "Show peer status and storage usage",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := currentConfig()
-
-			paths, err := cfg.Paths()
+			status, err := app.CollectStatus(context.Background(), cfg, configFileUsed(), "")
 			if err != nil {
 				return err
 			}
 
-			storeDir := dirSize(paths.StoreDir)
-
-			fmt.Printf("p2pbk Status\n")
-			fmt.Println("============")
-			fmt.Printf("Storage: %d bytes\n", storeDir)
-			fmt.Printf("Data dir: %s\n", paths.DataDir)
-			fmt.Printf("Store dir: %s\n", paths.StoreDir)
-			fmt.Printf("Cache dir: %s\n", paths.CacheDir)
-			fmt.Printf("Identity: %s\n", paths.Identity)
-			fmt.Printf("LocalDB: %s\n", paths.LocalDB)
-			fmt.Printf("Protected roots: %d\n", len(cfg.Backup.Roots))
-			for _, root := range cfg.Backup.Roots {
-				status := "missing"
-				if info, err := os.Stat(root); err == nil {
-					if info.IsDir() {
-						status = "directory"
-					} else {
-						status = "file"
-					}
-				}
-				fmt.Printf("  - %s (%s)\n", root, status)
-			}
-			fmt.Printf("Backup schedule: %s\n", cfg.Backup.Schedule)
-			fmt.Printf("Retention: %s\n", cfg.Backup.Retention)
-			fmt.Printf("Max protected data: %d bytes\n", cfg.Backup.MaxBytes)
-			engine := kopiaengine.New(configFileUsed(), cfg, "")
-			if engine.RepositoryConnected() {
-				fmt.Printf("Repository: initialized (%s)\n", engine.RepositoryConfigPath())
+			out := cmd.OutOrStdout()
+			fmt.Fprintln(out, "p2pbk Status")
+			fmt.Fprintln(out, "============")
+			fmt.Fprintf(out, "Storage: %d bytes\n", status.StorageBytes)
+			fmt.Fprintf(out, "Storage mode: %s\n", status.StorageMode)
+			fmt.Fprintf(out, "Data dir: %s\n", status.DataDir)
+			fmt.Fprintf(out, "Store dir: %s\n", status.StoreDir)
+			fmt.Fprintf(out, "Cache dir: %s\n", status.CacheDir)
+			if status.LocalDBStatus == "" || status.LocalDBStatus == "available" {
+				fmt.Fprintf(out, "LocalDB: %s\n", status.LocalDB)
 			} else {
-				fmt.Printf("Repository: not initialized; run `p2pbk repo init` or `p2pbk backup now`\n")
+				fmt.Fprintf(out, "LocalDB: %s (%s)\n", status.LocalDB, status.LocalDBStatus)
 			}
-			if db, err := localdb.Open(paths.LocalDB); err == nil {
-				for _, root := range cfg.Backup.Roots {
-					if value, err := db.GetSetting(scheduler.LastSuccessKey(root)); err == nil && len(value) > 0 {
-						fmt.Printf("Last scheduled backup for %s: %s\n", root, string(value))
-					}
-					if value, err := db.GetSetting(scheduler.LastFailureKey(root)); err == nil && len(value) > 0 {
-						fmt.Printf("Last scheduled backup failure for %s: %s\n", root, string(value))
+			fmt.Fprintf(out, "Protected roots: %d\n", len(status.Roots))
+			for _, root := range status.Roots {
+				fmt.Fprintf(out, "  - %s (%s, %s, snapshots=%d)\n", root.Path, root.Kind, root.Protection, root.Snapshots)
+			}
+			fmt.Fprintf(out, "Backup schedule: %s\n", status.Schedule)
+			fmt.Fprintf(out, "Retention: %s\n", status.Retention)
+			fmt.Fprintf(out, "Max protected data: %d bytes\n", status.MaxProtectedBytes)
+			if status.Repository == "initialized" {
+				fmt.Fprintf(out, "Repository: initialized (%s)\n", status.RepositoryPath)
+			} else {
+				fmt.Fprintln(out, "Repository: not initialized; run `p2pbk repo init` or `p2pbk backup now`")
+			}
+			for _, root := range status.Roots {
+				if root.LastSuccess != "" {
+					fmt.Fprintf(out, "Last scheduled backup for %s: %s\n", root.Path, root.LastSuccess)
+				}
+				if root.LastFailure != "" {
+					fmt.Fprintf(out, "Last scheduled backup failure for %s: %s\n", root.Path, root.LastFailure)
+				}
+			}
+			fmt.Fprintf(out, "Known peers: %d\n", len(status.Peers))
+			if opts.long {
+				for _, peer := range status.Peers {
+					fmt.Fprintf(out, "  - %s source=%s status=%s score=%.2f failures=%d last_seen=%s\n", peer.ID, peer.Source, peer.Status, peer.Score, peer.Failures, peer.LastSeen.Format("2006-01-02T15:04:05Z07:00"))
+					if len(peer.Addrs) > 0 {
+						fmt.Fprintf(out, "    addrs: %s\n", strings.Join(peer.Addrs, ", "))
 					}
 				}
-				if peers, err := db.ListPeers(); err == nil {
-					fmt.Printf("Known peers: %d\n", len(peers))
-					if opts.long {
-						for _, peer := range peers {
-							fmt.Printf("  - %s source=%s failures=%d last_seen=%s\n", peer.ID, peer.Source, peer.Failures, peer.LastSeen.Format("2006-01-02T15:04:05Z07:00"))
-							if len(peer.Addrs) > 0 {
-								fmt.Printf("    addrs: %s\n", strings.Join(peer.Addrs, ", "))
-							}
-						}
-					}
-				}
-				_ = db.Close()
 			}
-			fmt.Println()
+			fmt.Fprintln(out)
 
 			if opts.long {
-				fmt.Println("Detailed Status (long mode):")
-				fmt.Println("------------------------------")
+				fmt.Fprintln(out, "Detailed Status (long mode):")
+				fmt.Fprintln(out, "------------------------------")
 			}
 
 			return nil
@@ -97,19 +82,4 @@ func newStatusCommand() *cobra.Command {
 
 	cmd.Flags().BoolVar(&opts.long, "long", false, "show detailed status")
 	return cmd
-}
-
-func dirSize(root string) int64 {
-	var total int64
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		info, err := d.Info()
-		if err == nil {
-			total += info.Size()
-		}
-		return nil
-	})
-	return total
 }

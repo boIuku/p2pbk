@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"p2pbk/internal/app"
 	"p2pbk/internal/config"
 	"p2pbk/internal/peer/localdb"
 	"p2pbk/internal/trust/identity"
@@ -143,7 +143,7 @@ func runInit(opts initOptions, out io.Writer) error {
 	fmt.Fprintf(out, "network storage required for that policy: about %s\n", formatBytes(erasureStorageBytes(cfg.Backup.MaxBytes, cfg.Backup.DataShards, cfg.Backup.ParityShards)))
 	fmt.Fprintf(out, "offering up to %s to other peers\n", formatBytes(cfg.Storage.OfferBytes))
 	if opts.start {
-		if err := startDaemon(configPath, opts.passphrase); err != nil {
+		if err := app.StartDaemon(configPath, opts.passphrase); err != nil {
 			return err
 		}
 		fmt.Fprintln(out, "p2pbk is running in the background")
@@ -230,28 +230,4 @@ func plural(count int) string {
 		return "y"
 	}
 	return "ies"
-}
-
-func startDaemon(configPath, identityPassphrase string) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve executable: %w", err)
-	}
-	logPath := filepath.Join(filepath.Dir(configPath), "p2pbk.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("open daemon log: %w", err)
-	}
-	defer logFile.Close()
-
-	cmd := exec.Command(exe, "--config", configPath, "daemon")
-	if identityPassphrase != "" {
-		cmd.Env = append(os.Environ(), "P2PBK_IDENTITY_PASSPHRASE="+identityPassphrase)
-	}
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start background p2pbk: %w", err)
-	}
-	return cmd.Process.Release()
 }
