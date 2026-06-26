@@ -20,8 +20,7 @@ Stage 1 scaffold is in place:
 - Initial config schema, defaults, validation, and loader.
 - Build-time version package.
 - Example configuration.
-
-The next stage should add durable identity management and local bbolt state.
+- Durable identity management and local SQLite state.
 
 ## Usage model
 

@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
 	"p2pbk/internal/app"
+	"p2pbk/internal/secrets"
 )
 
 type backupOptions struct {
@@ -24,7 +24,7 @@ func newBackupCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := currentConfig()
 			configPath := currentConfigPath(cfg)
-			password := os.Getenv("P2PBK_REPOSITORY_PASSWORD")
+			password := secrets.FromEnv()
 			if len(args) == 1 && args[0] == "now" {
 				results, err := app.BackupAll(context.Background(), cfg, configPath, password, "manual")
 				if err != nil {

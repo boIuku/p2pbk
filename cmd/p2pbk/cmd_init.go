@@ -15,6 +15,7 @@ import (
 	"p2pbk/internal/app"
 	"p2pbk/internal/config"
 	"p2pbk/internal/peer/localdb"
+	"p2pbk/internal/secrets"
 	"p2pbk/internal/trust/identity"
 )
 
@@ -30,6 +31,7 @@ type initOptions struct {
 	start          bool
 	displayName    string
 	bootstrapPeers []string
+	publicDiscoveryPeers []string
 }
 
 func newInitCommand() *cobra.Command {
@@ -47,7 +49,7 @@ func newInitCommand() *cobra.Command {
 		Short: "Initialize p2pbk and start background backup service",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if opts.passphrase == "" {
-				opts.passphrase = os.Getenv("P2PBK_IDENTITY_PASSPHRASE")
+				opts.passphrase = secrets.FromEnv()
 			}
 			if opts.configPath == "" {
 				opts.configPath = configFileUsed()
@@ -64,6 +66,7 @@ func newInitCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.retention, "retention", opts.retention, "snapshot retention policy")
 	cmd.Flags().StringVar(&opts.displayName, "name", "", "human-readable node name")
 	cmd.Flags().StringSliceVar(&opts.bootstrapPeers, "bootstrap-peer", nil, "bootstrap peer multiaddr; repeat for multiple peers")
+	cmd.Flags().StringSliceVar(&opts.publicDiscoveryPeers, "public-discovery-peer", nil, "public discovery peer multiaddr; repeat for multiple peers")
 	cmd.Flags().StringVar(&opts.passphrase, "passphrase", "", "identity encryption passphrase")
 	cmd.Flags().BoolVar(&opts.start, "start", opts.start, "start p2pbk in the background after initialization")
 
@@ -72,7 +75,7 @@ func newInitCommand() *cobra.Command {
 
 func runInit(opts initOptions, out io.Writer) error {
 	if opts.passphrase == "" {
-		return errors.New("identity passphrase is required; use --passphrase or P2PBK_IDENTITY_PASSPHRASE")
+		return errors.New("p2pbk password is required; use --passphrase or P2PBK_REPOSITORY_PASSWORD")
 	}
 
 	cfg := config.Default()
@@ -85,6 +88,7 @@ func runInit(opts initOptions, out io.Writer) error {
 	cfg.Backup.InitialFull = true
 	cfg.Backup.Incremental = true
 	cfg.Network.BootstrapPeers = opts.bootstrapPeers
+	cfg.Network.PublicDiscoveryPeers = opts.publicDiscoveryPeers
 
 	maxBytes, err := parseByteSize(opts.maxSpace)
 	if err != nil {

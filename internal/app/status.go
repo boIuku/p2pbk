@@ -101,7 +101,7 @@ func CollectStatus(ctx context.Context, cfg config.Config, configPath, password 
 	if engine.RepositoryConnected() {
 		status.Repository = "initialized"
 		if password == "" {
-			status.RepositoryError = "backup store password required to list backups"
+			status.RepositoryError = "p2pbk password required to list backups"
 		} else {
 			snapshots, err := engine.ListSnapshots(ctx)
 			if err != nil {

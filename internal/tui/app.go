@@ -784,7 +784,7 @@ func (m model) setupNotice() string {
 		return "Setup needed: open Settings and press i to initialize the backup store, then add a folder or press b to back up."
 	}
 	if strings.Contains(strings.ToLower(m.status.RepositoryError), "password") {
-		return "Backups are locked: press p to enter the backup store password for this session."
+		return "Backups are locked: press p to enter the p2pbk password for this session."
 	}
 	if needsBackupStoreInit(m.status.RepositoryError) {
 		return "Setup needed: open Settings and press i to initialize the backup store before backing up."
@@ -799,7 +799,7 @@ func (m model) friendlyError(err error) string {
 	message := err.Error()
 	lower := strings.ToLower(message)
 	if strings.Contains(lower, "repository password") {
-		return "Backup store password is required. Press p to enter it for this session."
+		return "p2pbk password is required. Press p to enter it for this session."
 	}
 	if needsBackupStoreInit(message) {
 		return "Backup store is not initialized yet. Open Settings and press i to initialize it before backing up."

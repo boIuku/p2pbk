@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"p2pbk/internal/secrets"
 )
 
 func TestDaemonPIDReadWrite(t *testing.T) {
@@ -41,4 +43,14 @@ func TestProcessRunningCurrentProcess(t *testing.T) {
 	if !processRunning(os.Getpid()) {
 		t.Fatal("current process should be running")
 	}
+}
+
+func TestDaemonEnvUsesOnePassword(t *testing.T) {
+	env := secrets.Env("secret")
+	for _, value := range env {
+		if value == secrets.PasswordEnv+"=secret" {
+			return
+		}
+	}
+	t.Fatalf("daemon env missing p2pbk password: %v", env)
 }

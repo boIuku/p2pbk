@@ -28,7 +28,7 @@ func EnsureRepository(ctx context.Context, cfg config.Config, configPath, passwo
 		return "", errors.New("p2pbk config file is required; pass --config or run p2pbk init first")
 	}
 	if password == "" {
-		return "", errors.New("backup store password is required; enter it in the TUI or set P2PBK_REPOSITORY_PASSWORD")
+		return "", errors.New("p2pbk password is required; enter it in the TUI or set P2PBK_REPOSITORY_PASSWORD")
 	}
 	engine := kopiaengine.New(configPath, cfg, password)
 	if err := engine.EnsureRepository(ctx); err != nil {
@@ -78,7 +78,7 @@ func existingEngine(cfg config.Config, configPath, password string) (*kopiaengin
 		return nil, friendlyRepositoryError(kopiaengine.ErrRepositoryNotConnected)
 	}
 	if password == "" {
-		return nil, errors.New("backup store password is required; enter it in the TUI or set P2PBK_REPOSITORY_PASSWORD")
+		return nil, errors.New("p2pbk password is required; enter it in the TUI or set P2PBK_REPOSITORY_PASSWORD")
 	}
 	return kopiaengine.New(configPath, cfg, password), nil
 }

@@ -7,6 +7,7 @@ import (
 
 	"p2pbk/internal/config"
 	"p2pbk/internal/kopiaengine"
+	"p2pbk/internal/secrets"
 )
 
 func openKopiaEngine() (*kopiaengine.Engine, error) {
@@ -15,9 +16,9 @@ func openKopiaEngine() (*kopiaengine.Engine, error) {
 	if configPath == "" {
 		return nil, fmt.Errorf("p2pbk config file is required for Kopia-backed backup; pass --config or run p2pbk init first")
 	}
-	password := os.Getenv("P2PBK_REPOSITORY_PASSWORD")
+	password := secrets.FromEnv()
 	if password == "" {
-		return nil, fmt.Errorf("repository password is required; set P2PBK_REPOSITORY_PASSWORD")
+		return nil, fmt.Errorf("p2pbk password is required; set P2PBK_REPOSITORY_PASSWORD")
 	}
 	return kopiaengine.New(configPath, cfg, password), nil
 }
@@ -32,9 +33,9 @@ func openExistingKopiaEngine() (*kopiaengine.Engine, error) {
 	if !probe.RepositoryConnected() {
 		return nil, fmt.Errorf("%w: run `p2pbk repo init` or `p2pbk backup now` first", kopiaengine.ErrRepositoryNotConnected)
 	}
-	password := os.Getenv("P2PBK_REPOSITORY_PASSWORD")
+	password := secrets.FromEnv()
 	if password == "" {
-		return nil, fmt.Errorf("repository password is required; set P2PBK_REPOSITORY_PASSWORD")
+		return nil, fmt.Errorf("p2pbk password is required; set P2PBK_REPOSITORY_PASSWORD")
 	}
 	return kopiaengine.New(configPath, cfg, password), nil
 }

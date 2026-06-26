@@ -15,25 +15,29 @@ import (
 )
 
 type ConfigSummary struct {
-	Path                  string
-	DataDir               string
-	StoreDir              string
-	CacheDir              string
-	OfferBytes            int64
-	ProtocolID            string
-	MinPeers              int
-	LocalDiscovery        bool
-	LocalDiscoveryService string
-	ProtectedRoots        []string
-	MaxProtectedBytes     int64
-	Schedule              string
-	Retention             string
-	DataShards            int
-	ParityShards          int
-	ChallengeInterval     string
-	ReputationWindow      string
-	DisplayName           string
-	BootstrapPeers        []string
+	Path                         string
+	DataDir                      string
+	StoreDir                     string
+	CacheDir                     string
+	OfferBytes                   int64
+	ProtocolID                   string
+	MinPeers                     int
+	LocalDiscovery               bool
+	LocalDiscoveryService        string
+	RemoteDiscovery              bool
+	RemoteDiscoveryNamespace     string
+	RemoteDiscoveryInterval      string
+	PublicDiscoveryPeers         []string
+	ProtectedRoots               []string
+	MaxProtectedBytes            int64
+	Schedule                     string
+	Retention                    string
+	DataShards                   int
+	ParityShards                 int
+	ChallengeInterval            string
+	ReputationWindow             string
+	DisplayName                  string
+	BootstrapPeers               []string
 }
 
 func SummarizeConfig(cfg config.Config, path string) (ConfigSummary, error) {
@@ -42,25 +46,29 @@ func SummarizeConfig(cfg config.Config, path string) (ConfigSummary, error) {
 		return ConfigSummary{}, err
 	}
 	return ConfigSummary{
-		Path:                  path,
-		DataDir:               paths.DataDir,
-		StoreDir:              paths.StoreDir,
-		CacheDir:              paths.CacheDir,
-		OfferBytes:            cfg.Storage.OfferBytes,
-		ProtocolID:            cfg.Network.ProtocolID,
-		MinPeers:              cfg.Network.MinPeers,
-		LocalDiscovery:        cfg.Network.EnableLocalDiscovery,
-		LocalDiscoveryService: cfg.Network.LocalDiscoveryService,
-		ProtectedRoots:        NormalizeRootList(cfg.Backup.Roots),
-		MaxProtectedBytes:     cfg.Backup.MaxBytes,
-		Schedule:              cfg.Backup.Schedule,
-		Retention:             cfg.Backup.Retention,
-		DataShards:            cfg.Backup.DataShards,
-		ParityShards:          cfg.Backup.ParityShards,
-		ChallengeInterval:     cfg.Trust.ChallengeInterval,
-		ReputationWindow:      cfg.Trust.ReputationWindow,
-		DisplayName:           cfg.Node.DisplayName,
-		BootstrapPeers:        append([]string(nil), cfg.Network.BootstrapPeers...),
+		Path:                     path,
+		DataDir:                  paths.DataDir,
+		StoreDir:                 paths.StoreDir,
+		CacheDir:                 paths.CacheDir,
+		OfferBytes:               cfg.Storage.OfferBytes,
+		ProtocolID:               cfg.Network.ProtocolID,
+		MinPeers:                 cfg.Network.MinPeers,
+		LocalDiscovery:           cfg.Network.EnableLocalDiscovery,
+		LocalDiscoveryService:    cfg.Network.LocalDiscoveryService,
+		RemoteDiscovery:          cfg.Network.EnableRemoteDiscovery,
+		RemoteDiscoveryNamespace: cfg.Network.RemoteDiscoveryNamespace,
+		RemoteDiscoveryInterval:  cfg.Network.RemoteDiscoveryInterval,
+		PublicDiscoveryPeers:     append([]string(nil), cfg.Network.PublicDiscoveryPeers...),
+		ProtectedRoots:           NormalizeRootList(cfg.Backup.Roots),
+		MaxProtectedBytes:        cfg.Backup.MaxBytes,
+		Schedule:                 cfg.Backup.Schedule,
+		Retention:                cfg.Backup.Retention,
+		DataShards:               cfg.Backup.DataShards,
+		ParityShards:             cfg.Backup.ParityShards,
+		ChallengeInterval:        cfg.Trust.ChallengeInterval,
+		ReputationWindow:         cfg.Trust.ReputationWindow,
+		DisplayName:              cfg.Node.DisplayName,
+		BootstrapPeers:           append([]string(nil), cfg.Network.BootstrapPeers...),
 	}, nil
 }
 
@@ -192,6 +200,18 @@ func ApplyConfigSet(cfg *config.Config, key, value string) error {
 		cfg.Network.ProtocolID = value
 	case "network.local_discovery_service":
 		cfg.Network.LocalDiscoveryService = value
+	case "network.enable_remote_discovery":
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		cfg.Network.EnableRemoteDiscovery = enabled
+	case "network.remote_discovery_namespace":
+		cfg.Network.RemoteDiscoveryNamespace = value
+	case "network.remote_discovery_interval":
+		cfg.Network.RemoteDiscoveryInterval = value
+	case "network.public_discovery_peers":
+		cfg.Network.PublicDiscoveryPeers = splitCommaList(value)
 	case "backup.max_bytes":
 		n, err := ParseByteSize(value)
 		if err != nil {
@@ -210,6 +230,18 @@ func ApplyConfigSet(cfg *config.Config, key, value string) error {
 		return fmt.Errorf("unsupported config key %q", key)
 	}
 	return cfg.Validate()
+}
+
+func splitCommaList(value string) []string {
+	parts := strings.Split(value, ",")
+	out := []string{}
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func SaveConfig(cfg config.Config, path string) error {

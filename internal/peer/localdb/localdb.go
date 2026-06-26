@@ -1,30 +1,21 @@
 package localdb
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
+	"strings"
 	"time"
 
-	"go.etcd.io/bbolt"
+	_ "modernc.org/sqlite"
 )
 
 type DB struct {
-	*bbolt.DB
+	conn *sql.DB
 	path string
 }
-
-type sharedDB struct {
-	db   *bbolt.DB
-	refs int
-}
-
-var (
-	openMu  sync.Mutex
-	openDBs = map[string]*sharedDB{}
-)
 
 func Open(path string) (*DB, error) {
 	cleanPath, err := filepath.Abs(path)
@@ -33,97 +24,155 @@ func Open(path string) (*DB, error) {
 	}
 	cleanPath = filepath.Clean(cleanPath)
 
-	openMu.Lock()
-	if existing := openDBs[cleanPath]; existing != nil {
-		existing.refs++
-		db := existing.db
-		openMu.Unlock()
-		return &DB{DB: db, path: cleanPath}, nil
-	}
-	openMu.Unlock()
-
 	if err := os.MkdirAll(filepath.Dir(cleanPath), 0o700); err != nil {
 		return nil, fmt.Errorf("create localdb directory: %w", err)
 	}
 
-	db, err := bbolt.Open(cleanPath, 0o600, &bbolt.Options{Timeout: time.Second})
+	db, err := openSQLite(cleanPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.init(); err != nil {
+		_ = db.Close()
+		if !isSQLiteFormatError(err) {
+			return nil, err
+		}
+		backup, renameErr := moveAsideLegacyDB(cleanPath)
+		if renameErr != nil {
+			return nil, fmt.Errorf("%w; additionally failed to move legacy localdb aside: %v", err, renameErr)
+		}
+		db, err = openSQLite(cleanPath)
+		if err != nil {
+			return nil, err
+		}
+		if err := db.init(); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("initialize fresh sqlite localdb after moving legacy db to %s: %w", backup, err)
+		}
+	}
+	return db, nil
+}
+
+func openSQLite(path string) (*DB, error) {
+	conn, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open localdb: %w", err)
 	}
-
-	wrapped := &DB{DB: db, path: cleanPath}
-	if err := wrapped.init(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-
-	openMu.Lock()
-	openDBs[cleanPath] = &sharedDB{db: db, refs: 1}
-	openMu.Unlock()
-
-	return wrapped, nil
+	conn.SetMaxOpenConns(1)
+	conn.SetMaxIdleConns(1)
+	conn.SetConnMaxLifetime(0)
+	return &DB{conn: conn, path: path}, nil
 }
 
-func IsOpenTimeout(err error) bool {
-	return errors.Is(err, bbolt.ErrTimeout)
+func IsOpenTimeout(error) bool {
+	return false
 }
 
 func (db *DB) Close() error {
-	if db == nil || db.DB == nil {
+	if db == nil || db.conn == nil {
 		return nil
 	}
-	openMu.Lock()
-	shared := openDBs[db.path]
-	if shared == nil {
-		openMu.Unlock()
-		return nil
-	}
-	shared.refs--
-	if shared.refs > 0 {
-		openMu.Unlock()
-		return nil
-	}
-	delete(openDBs, db.path)
-	raw := shared.db
-	openMu.Unlock()
-	return raw.Close()
+	return db.conn.Close()
 }
 
 func (db *DB) init() error {
-	return db.Update(func(tx *bbolt.Tx) error {
-		for _, name := range RequiredBuckets {
-			if _, err := tx.CreateBucketIfNotExists([]byte(name)); err != nil {
-				return fmt.Errorf("create bucket %s: %w", name, err)
-			}
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA foreign_keys=ON",
+	}
+	for _, stmt := range pragmas {
+		if _, err := db.conn.Exec(stmt); err != nil {
+			return fmt.Errorf("apply sqlite pragma %q: %w", stmt, err)
 		}
-		return nil
-	})
+	}
+	schema := []string{
+		`CREATE TABLE IF NOT EXISTS settings (
+			key TEXT PRIMARY KEY,
+			value BLOB NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS peers (
+			id TEXT PRIMARY KEY,
+			last_seen TEXT NOT NULL,
+			data BLOB NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS peers_last_seen_idx ON peers(last_seen)`,
+		`CREATE TABLE IF NOT EXISTS owned_blobs (
+			key TEXT PRIMARY KEY,
+			data BLOB NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS shard_receipts (
+			key TEXT PRIMARY KEY,
+			peer_id TEXT NOT NULL,
+			stored_at TEXT NOT NULL,
+			data BLOB NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS shard_receipts_stored_at_idx ON shard_receipts(stored_at)`,
+		`CREATE TABLE IF NOT EXISTS audit_history (
+			key TEXT PRIMARY KEY,
+			peer_id TEXT NOT NULL,
+			checked_at TEXT NOT NULL,
+			data BLOB NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS audit_history_peer_checked_idx ON audit_history(peer_id, checked_at)`,
+	}
+	for _, stmt := range schema {
+		if _, err := db.conn.Exec(stmt); err != nil {
+			return fmt.Errorf("initialize localdb schema: %w", err)
+		}
+	}
+	return nil
 }
 
-// PutSetting writes a key-value pair to the settings bucket.
+func isSQLiteFormatError(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "not a database")
+}
+
+func moveAsideLegacyDB(path string) (string, error) {
+	if _, err := os.Stat(path); err != nil {
+		return "", err
+	}
+	backup := path + ".legacy.bak"
+	for i := 1; ; i++ {
+		if _, err := os.Stat(backup); os.IsNotExist(err) {
+			return backup, os.Rename(path, backup)
+		}
+		backup = fmt.Sprintf("%s.legacy.%d.bak", path, i)
+	}
+}
+
 func (db *DB) PutSetting(key string, value []byte) error {
 	if key == "" {
 		return errors.New("setting key is required")
 	}
-	return db.Update(func(tx *bbolt.Tx) error {
-		return tx.Bucket([]byte(BucketSettings)).Put([]byte(key), value)
-	})
+	_, err := db.conn.Exec(
+		`INSERT INTO settings(key, value) VALUES(?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		key,
+		append([]byte(nil), value...),
+	)
+	return err
 }
 
-// GetSetting retrieves a value from the settings bucket.
 func (db *DB) GetSetting(key string) ([]byte, error) {
 	if key == "" {
 		return nil, errors.New("setting key is required")
 	}
 
-	var out []byte
-	err := db.View(func(tx *bbolt.Tx) error {
-		value := tx.Bucket([]byte(BucketSettings)).Get([]byte(key))
-		if value == nil {
-			return nil
-		}
-		out = append([]byte(nil), value...)
-		return nil
-	})
-	return out, err
+	var value []byte
+	err := db.conn.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), value...), nil
+}
+
+func timeKey(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
 }

@@ -6,13 +6,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 
 	"p2pbk/internal/config"
 	"p2pbk/internal/kopiaengine"
 	"p2pbk/internal/peer/localdb"
+	"p2pbk/internal/secrets"
 )
 
 const CheckInterval = time.Minute
@@ -72,11 +72,12 @@ func RunDue(ctx context.Context, opts Options, interval time.Duration, now time.
 	if out == nil {
 		out = io.Discard
 	}
-	if os.Getenv("P2PBK_REPOSITORY_PASSWORD") == "" {
+	password := secrets.FromEnv()
+	if password == "" {
 		fmt.Fprintln(out, "backup scheduler: P2PBK_REPOSITORY_PASSWORD is not set; scheduled backups paused")
 		return
 	}
-	engine := kopiaengine.New(opts.ConfigPath, opts.Config, os.Getenv("P2PBK_REPOSITORY_PASSWORD"))
+	engine := kopiaengine.New(opts.ConfigPath, opts.Config, password)
 	for _, root := range opts.Config.Backup.Roots {
 		if root == "" {
 			continue

@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
 	"p2pbk/internal/app"
 	"p2pbk/internal/kopiaengine"
+	"p2pbk/internal/secrets"
 )
 
 func newRepoCommand() *cobra.Command {
@@ -23,7 +23,7 @@ func newRepoCommand() *cobra.Command {
 		Short: "Initialize and connect the Kopia repository",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := currentConfig()
-			path, err := app.EnsureRepository(context.Background(), cfg, currentConfigPath(cfg), os.Getenv("P2PBK_REPOSITORY_PASSWORD"))
+			path, err := app.EnsureRepository(context.Background(), cfg, currentConfigPath(cfg), secrets.FromEnv())
 			if err != nil {
 				return err
 			}
@@ -37,7 +37,7 @@ func newRepoCommand() *cobra.Command {
 		Short: "Connect local Kopia config to the p2pbk repository",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := currentConfig()
-			path, err := app.EnsureRepository(context.Background(), cfg, currentConfigPath(cfg), os.Getenv("P2PBK_REPOSITORY_PASSWORD"))
+			path, err := app.EnsureRepository(context.Background(), cfg, currentConfigPath(cfg), secrets.FromEnv())
 			if err != nil {
 				return err
 			}
@@ -51,7 +51,7 @@ func newRepoCommand() *cobra.Command {
 		Short: "Show Kopia repository status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := currentConfig()
-			status, err := app.GetRepositoryStatus(context.Background(), cfg, currentConfigPath(cfg), os.Getenv("P2PBK_REPOSITORY_PASSWORD"))
+			status, err := app.GetRepositoryStatus(context.Background(), cfg, currentConfigPath(cfg), secrets.FromEnv())
 			if err != nil {
 				return friendlyRepositoryError(err)
 			}
@@ -70,7 +70,7 @@ func newRepoCommand() *cobra.Command {
 		Short: "Show Kopia maintenance schedule",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := currentConfig()
-			status, err := app.GetMaintenanceStatus(context.Background(), cfg, currentConfigPath(cfg), os.Getenv("P2PBK_REPOSITORY_PASSWORD"))
+			status, err := app.GetMaintenanceStatus(context.Background(), cfg, currentConfigPath(cfg), secrets.FromEnv())
 			if err != nil {
 				return friendlyRepositoryError(err)
 			}

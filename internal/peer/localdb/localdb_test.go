@@ -1,30 +1,25 @@
 package localdb
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
-
-	bolt "go.etcd.io/bbolt"
 )
 
-func TestOpenCreatesRequiredBuckets(t *testing.T) {
+func TestOpenCreatesRequiredTables(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "local.db"))
 	if err != nil {
 		t.Fatalf("Open returned error: %v", err)
 	}
 	defer db.Close()
 
-	err = db.View(func(tx *bolt.Tx) error {
-		for _, name := range RequiredBuckets {
-			if tx.Bucket([]byte(name)) == nil {
-				t.Fatalf("missing bucket %s", name)
-			}
+	for _, name := range RequiredBuckets {
+		var found string
+		err := db.conn.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, string(name)).Scan(&found)
+		if err != nil {
+			t.Fatalf("missing table %s: %v", name, err)
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("View returned error: %v", err)
 	}
 }
 
@@ -76,6 +71,62 @@ func TestOpenReusesHandleInProcess(t *testing.T) {
 	}
 	if err := db2.Close(); err != nil {
 		t.Fatalf("second Close returned error: %v", err)
+	}
+}
+
+func TestMultipleConnectionsCanReadAndWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "local.db")
+	db1, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open returned error: %v", err)
+	}
+	defer db1.Close()
+	db2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open returned error: %v", err)
+	}
+	defer db2.Close()
+
+	if err := db1.PutSetting("writer", []byte("db1")); err != nil {
+		t.Fatalf("db1 PutSetting returned error: %v", err)
+	}
+	got, err := db2.GetSetting("writer")
+	if err != nil {
+		t.Fatalf("db2 GetSetting returned error: %v", err)
+	}
+	if string(got) != "db1" {
+		t.Fatalf("setting = %q, want db1", got)
+	}
+
+	if err := db2.PutSetting("writer", []byte("db2")); err != nil {
+		t.Fatalf("db2 PutSetting returned error: %v", err)
+	}
+	got, err = db1.GetSetting("writer")
+	if err != nil {
+		t.Fatalf("db1 GetSetting returned error: %v", err)
+	}
+	if string(got) != "db2" {
+		t.Fatalf("setting = %q, want db2", got)
+	}
+}
+
+func TestOpenMovesLegacyNonSQLiteDBAside(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "local.db")
+	if err := os.WriteFile(path, []byte("not sqlite"), 0o600); err != nil {
+		t.Fatalf("write legacy db: %v", err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := os.Stat(path + ".legacy.bak"); err != nil {
+		t.Fatalf("legacy backup was not created: %v", err)
+	}
+	if err := db.PutSetting("fresh", []byte("ok")); err != nil {
+		t.Fatalf("PutSetting on fresh db returned error: %v", err)
 	}
 }
 

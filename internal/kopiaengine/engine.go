@@ -23,6 +23,7 @@ import (
 
 	"p2pbk/internal/config"
 	"p2pbk/internal/node"
+	"p2pbk/internal/secrets"
 )
 
 const (
@@ -80,6 +81,13 @@ func New(configPath string, cfg config.Config, password string) *Engine {
 }
 
 func (e *Engine) EnsureRepository(ctx context.Context) error {
+	_, err := secrets.WithPassword(e.Password, func() (struct{}, error) {
+		return struct{}{}, e.ensureRepository(ctx)
+	})
+	return err
+}
+
+func (e *Engine) ensureRepository(ctx context.Context) error {
 	st, err := e.openStorage(ctx, true)
 	if err != nil {
 		return err
@@ -108,7 +116,13 @@ func snapshotInfo(man *snapshot.Manifest) SnapshotInfo {
 }
 
 func (e *Engine) Backup(ctx context.Context, sourcePath, description string) (BackupResult, error) {
-	if err := e.EnsureRepository(ctx); err != nil {
+	return secrets.WithPassword(e.Password, func() (BackupResult, error) {
+		return e.backup(ctx, sourcePath, description)
+	})
+}
+
+func (e *Engine) backup(ctx context.Context, sourcePath, description string) (BackupResult, error) {
+	if err := e.ensureRepository(ctx); err != nil {
 		return BackupResult{}, err
 	}
 	rep, err := e.openRepository(ctx)
@@ -151,6 +165,12 @@ func (e *Engine) Backup(ctx context.Context, sourcePath, description string) (Ba
 }
 
 func (e *Engine) Restore(ctx context.Context, snapshotRef, targetPath string) (RestoreResult, error) {
+	return secrets.WithPassword(e.Password, func() (RestoreResult, error) {
+		return e.restore(ctx, snapshotRef, targetPath)
+	})
+}
+
+func (e *Engine) restore(ctx context.Context, snapshotRef, targetPath string) (RestoreResult, error) {
 	rep, err := e.openRepository(ctx)
 	if err != nil {
 		return RestoreResult{}, err
@@ -183,13 +203,19 @@ func (e *Engine) Restore(ctx context.Context, snapshotRef, targetPath string) (R
 }
 
 func (e *Engine) Status(ctx context.Context) (RepositoryStatus, error) {
+	return secrets.WithPassword(e.Password, func() (RepositoryStatus, error) {
+		return e.status(ctx)
+	})
+}
+
+func (e *Engine) status(ctx context.Context) (RepositoryStatus, error) {
 	rep, err := e.openRepository(ctx)
 	if err != nil {
 		return RepositoryStatus{}, err
 	}
 	defer rep.Close(ctx)
 
-	snapshots, err := e.ListSnapshots(ctx)
+	snapshots, err := e.listSnapshots(ctx)
 	if err != nil {
 		return RepositoryStatus{}, err
 	}
@@ -205,6 +231,12 @@ func (e *Engine) Status(ctx context.Context) (RepositoryStatus, error) {
 }
 
 func (e *Engine) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
+	return secrets.WithPassword(e.Password, func() ([]SnapshotInfo, error) {
+		return e.listSnapshots(ctx)
+	})
+}
+
+func (e *Engine) listSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
 	rep, err := e.openRepository(ctx)
 	if err != nil {
 		return nil, err
@@ -230,6 +262,12 @@ func (e *Engine) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
 }
 
 func (e *Engine) ShowSnapshot(ctx context.Context, ref string) (SnapshotInfo, error) {
+	return secrets.WithPassword(e.Password, func() (SnapshotInfo, error) {
+		return e.showSnapshot(ctx, ref)
+	})
+}
+
+func (e *Engine) showSnapshot(ctx context.Context, ref string) (SnapshotInfo, error) {
 	rep, err := e.openRepository(ctx)
 	if err != nil {
 		return SnapshotInfo{}, err
@@ -244,6 +282,12 @@ func (e *Engine) ShowSnapshot(ctx context.Context, ref string) (SnapshotInfo, er
 }
 
 func (e *Engine) MaintenanceStatus(ctx context.Context) (MaintenanceStatus, error) {
+	return secrets.WithPassword(e.Password, func() (MaintenanceStatus, error) {
+		return e.maintenanceStatus(ctx)
+	})
+}
+
+func (e *Engine) maintenanceStatus(ctx context.Context) (MaintenanceStatus, error) {
 	rep, err := e.openRepository(ctx)
 	if err != nil {
 		return MaintenanceStatus{}, err
@@ -268,7 +312,9 @@ func (e *Engine) openRepository(ctx context.Context) (repo.Repository, error) {
 	} else if err != nil {
 		return nil, fmt.Errorf("stat kopia repository config: %w", err)
 	}
-	rep, err := repo.Open(ctx, e.RepositoryConfigPath(), e.Password, &repo.Options{})
+	rep, err := secrets.WithPassword(e.Password, func() (repo.Repository, error) {
+		return repo.Open(ctx, e.RepositoryConfigPath(), e.Password, &repo.Options{})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("open kopia repository: %w", err)
 	}
@@ -282,7 +328,9 @@ func (e *Engine) RepositoryConnected() bool {
 
 func (e *Engine) openStorage(ctx context.Context, isCreate bool) (*openedStorage, error) {
 	RegisterProvider()
-	st, err := newStorage(ctx, &StorageOptions{ConfigPath: e.ConfigPath}, isCreate)
+	st, err := secrets.WithPassword(e.Password, func() (kopiablob.Storage, error) {
+		return newStorage(ctx, &StorageOptions{ConfigPath: e.ConfigPath}, isCreate)
+	})
 	if err != nil {
 		return nil, err
 	}

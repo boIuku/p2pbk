@@ -8,8 +8,10 @@ import (
 	"time"
 
 	kaddht "github.com/libp2p/go-libp2p-kad-dht"
+	corediscovery "github.com/libp2p/go-libp2p/core/discovery"
 	corehost "github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	routingdiscovery "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 )
 
 type Mode string
@@ -107,6 +109,30 @@ func (d *DHT) GetValue(ctx context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("get dht value %q: %w", key, err)
 	}
 	return value, nil
+}
+
+func (d *DHT) Advertise(ctx context.Context, namespace string, ttl time.Duration) (time.Duration, error) {
+	opts := []corediscovery.Option{}
+	if ttl > 0 {
+		opts = append(opts, corediscovery.TTL(ttl))
+	}
+	advertisedTTL, err := routingdiscovery.NewRoutingDiscovery(d.inner).Advertise(ctx, namespace, opts...)
+	if err != nil {
+		return 0, fmt.Errorf("advertise discovery namespace %q: %w", namespace, err)
+	}
+	return advertisedTTL, nil
+}
+
+func (d *DHT) FindPeers(ctx context.Context, namespace string, limit int) (<-chan peer.AddrInfo, error) {
+	opts := []corediscovery.Option{}
+	if limit > 0 {
+		opts = append(opts, corediscovery.Limit(limit))
+	}
+	peers, err := routingdiscovery.NewRoutingDiscovery(d.inner).FindPeers(ctx, namespace, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("find peers in discovery namespace %q: %w", namespace, err)
+	}
+	return peers, nil
 }
 
 func (d *DHT) Close() error {

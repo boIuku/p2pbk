@@ -62,7 +62,7 @@ func BackupRoot(ctx context.Context, req BackupRequest) (BackupResult, error) {
 		return BackupResult{}, errors.New("p2pbk config file is required; pass --config or run p2pbk init first")
 	}
 	if req.Password == "" {
-		return BackupResult{}, errors.New("backup store password is required; enter it in the TUI or set P2PBK_REPOSITORY_PASSWORD")
+		return BackupResult{}, errors.New("p2pbk password is required; enter it in the TUI or set P2PBK_REPOSITORY_PASSWORD")
 	}
 	if req.Source == "" {
 		return BackupResult{}, errors.New("backup source is required")
@@ -115,7 +115,7 @@ func RestoreSnapshot(ctx context.Context, req RestoreRequest) (RestoreResult, er
 		return RestoreResult{}, errors.New("p2pbk config file is required; pass --config or run p2pbk init first")
 	}
 	if req.Password == "" {
-		return RestoreResult{}, errors.New("backup store password is required; enter it in the TUI or set P2PBK_REPOSITORY_PASSWORD")
+		return RestoreResult{}, errors.New("p2pbk password is required; enter it in the TUI or set P2PBK_REPOSITORY_PASSWORD")
 	}
 	if req.Snapshot == "" {
 		return RestoreResult{}, errors.New("snapshot id is required")

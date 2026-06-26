@@ -7,8 +7,6 @@ import (
 	"sort"
 	"time"
 
-	"go.etcd.io/bbolt"
-
 	"p2pbk/internal/peer/blobserver"
 	"p2pbk/internal/trust/receipts"
 )
@@ -48,40 +46,64 @@ func (db *DB) StoreShardReceipt(record ShardReceiptRecord) error {
 	}
 	record.StoredAt = record.StoredAt.UTC()
 
-	return db.Update(func(tx *bbolt.Tx) error {
-		data, err := json.Marshal(record)
-		if err != nil {
-			return fmt.Errorf("marshal shard receipt: %w", err)
-		}
-		if err := tx.Bucket([]byte(BucketShardReceipts)).Put([]byte(receiptKey(record.PeerID, record.Receipt.Ref)), data); err != nil {
-			return err
-		}
-		return upsertPeerInTx(tx, record.PeerID, func(peer *PeerRecord) {
-			peer.LastSeen = record.StoredAt
-			peer.StoredShards++
-		})
-	})
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal shard receipt: %w", err)
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO shard_receipts(key, peer_id, stored_at, data) VALUES(?, ?, ?, ?)
+		 ON CONFLICT(key) DO UPDATE SET peer_id = excluded.peer_id, stored_at = excluded.stored_at, data = excluded.data`,
+		receiptKey(record.PeerID, record.Receipt.Ref),
+		record.PeerID,
+		timeKey(record.StoredAt),
+		data,
+	); err != nil {
+		return err
+	}
+	if err := upsertPeerInTx(tx, record.PeerID, func(peer *PeerRecord) {
+		peer.LastSeen = record.StoredAt
+		peer.StoredShards++
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (db *DB) ListShardReceipts() ([]ShardReceiptRecord, error) {
+	rows, err := db.conn.Query(`SELECT data FROM shard_receipts ORDER BY stored_at DESC, peer_id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
 	var out []ShardReceiptRecord
-	err := db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket([]byte(BucketShardReceipts)).ForEach(func(_, v []byte) error {
-			var record ShardReceiptRecord
-			if err := json.Unmarshal(v, &record); err != nil {
-				return fmt.Errorf("unmarshal shard receipt: %w", err)
-			}
-			out = append(out, record)
-			return nil
-		})
-	})
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		var record ShardReceiptRecord
+		if err := json.Unmarshal(data, &record); err != nil {
+			return nil, fmt.Errorf("unmarshal shard receipt: %w", err)
+		}
+		out = append(out, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].StoredAt.Equal(out[j].StoredAt) {
 			return out[i].PeerID < out[j].PeerID
 		}
 		return out[i].StoredAt.After(out[j].StoredAt)
 	})
-	return out, err
+	return out, nil
 }
 
 func (db *DB) RecordAudit(record AuditRecord) error {
@@ -96,47 +118,74 @@ func (db *DB) RecordAudit(record AuditRecord) error {
 	}
 	record.CheckedAt = record.CheckedAt.UTC()
 
-	return db.Update(func(tx *bbolt.Tx) error {
-		data, err := json.Marshal(record)
-		if err != nil {
-			return fmt.Errorf("marshal audit record: %w", err)
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal audit record: %w", err)
+	}
+	key := fmt.Sprintf("%s|%s|%d|%d", record.PeerID, record.Ref.BlobID, record.Ref.Index, record.CheckedAt.UnixNano())
+	if _, err := tx.Exec(
+		`INSERT INTO audit_history(key, peer_id, checked_at, data) VALUES(?, ?, ?, ?)`,
+		key,
+		record.PeerID,
+		timeKey(record.CheckedAt),
+		data,
+	); err != nil {
+		return err
+	}
+	if err := upsertPeerInTx(tx, record.PeerID, func(peer *PeerRecord) {
+		peer.LastSeen = record.CheckedAt
+		if record.Success {
+			peer.LastSuccess = record.CheckedAt
+			peer.AuditSuccesses++
+			return
 		}
-		key := fmt.Sprintf("%s|%s|%d|%d", record.PeerID, record.Ref.BlobID, record.Ref.Index, record.CheckedAt.UnixNano())
-		if err := tx.Bucket([]byte(BucketAuditHistory)).Put([]byte(key), data); err != nil {
-			return err
-		}
-		return upsertPeerInTx(tx, record.PeerID, func(peer *PeerRecord) {
-			peer.LastSeen = record.CheckedAt
-			if record.Success {
-				peer.LastSuccess = record.CheckedAt
-				peer.AuditSuccesses++
-				return
-			}
-			peer.LastFailure = record.CheckedAt
-			peer.AuditFailures++
-			peer.Failures++
-		})
-	})
+		peer.LastFailure = record.CheckedAt
+		peer.AuditFailures++
+		peer.Failures++
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (db *DB) ListAuditHistory(peerID string) ([]AuditRecord, error) {
+	query := `SELECT data FROM audit_history ORDER BY checked_at DESC`
+	args := []any(nil)
+	if peerID != "" {
+		query = `SELECT data FROM audit_history WHERE peer_id = ? ORDER BY checked_at DESC`
+		args = append(args, peerID)
+	}
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
 	var out []AuditRecord
-	err := db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket([]byte(BucketAuditHistory)).ForEach(func(_, v []byte) error {
-			var record AuditRecord
-			if err := json.Unmarshal(v, &record); err != nil {
-				return fmt.Errorf("unmarshal audit record: %w", err)
-			}
-			if peerID == "" || record.PeerID == peerID {
-				out = append(out, record)
-			}
-			return nil
-		})
-	})
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		var record AuditRecord
+		if err := json.Unmarshal(data, &record); err != nil {
+			return nil, fmt.Errorf("unmarshal audit record: %w", err)
+		}
+		out = append(out, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].CheckedAt.After(out[j].CheckedAt)
 	})
-	return out, err
+	return out, nil
 }
 
 func (db *DB) ListPeerStats() ([]PeerStats, error) {
@@ -190,24 +239,6 @@ func PeerStatus(score float64, peer PeerRecord) string {
 		return "new"
 	}
 	return "healthy"
-}
-
-func upsertPeerInTx(tx *bbolt.Tx, peerID string, update func(*PeerRecord)) error {
-	b := tx.Bucket([]byte(BucketPeers))
-	record, err := peerRecordFromBucket(b, peerID)
-	if err != nil {
-		return err
-	}
-	if record == nil {
-		now := time.Now().UTC()
-		record = &PeerRecord{ID: peerID, Source: "observed", FirstSeen: now, LastSeen: now}
-	}
-	update(record)
-	data, err := json.Marshal(record)
-	if err != nil {
-		return fmt.Errorf("marshal peer record: %w", err)
-	}
-	return b.Put([]byte(peerID), data)
 }
 
 func receiptKey(peerID string, ref receipts.ShardRef) string {

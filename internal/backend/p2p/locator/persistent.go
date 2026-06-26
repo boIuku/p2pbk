@@ -3,6 +3,7 @@ package locator
 import (
 	"context"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -13,13 +14,11 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
-	bolt "go.etcd.io/bbolt"
+	_ "modernc.org/sqlite"
 
 	"p2pbk/internal/peer/blobserver"
 	"p2pbk/internal/trust/identity"
 )
-
-var recordsBucket = []byte("locator_records")
 
 type SignedRecord struct {
 	BlobID    string           `json:"blob_id"`
@@ -35,7 +34,7 @@ type SignedLocation struct {
 }
 
 type Persistent struct {
-	db       *bolt.DB
+	db       *sql.DB
 	signer   *identity.Identity
 	verifyPK ed25519.PublicKey
 }
@@ -53,10 +52,12 @@ func OpenPersistent(path string, signer *identity.Identity, verifyPK ed25519.Pub
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create locator directory: %w", err)
 	}
-	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: time.Second})
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open locator db: %w", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	p := &Persistent{db: db, signer: signer, verifyPK: verifyPK}
 	if err := p.init(); err != nil {
 		_ = db.Close()
@@ -78,24 +79,24 @@ func (p *Persistent) Put(ctx context.Context, blobID string, locations []Locatio
 	if err != nil {
 		return fmt.Errorf("marshal locator record: %w", err)
 	}
-	return p.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(recordsBucket).Put([]byte(blobID), payload)
-	})
+	_, err = p.db.Exec(
+		`INSERT INTO locator_records(blob_id, issued_at, data) VALUES(?, ?, ?)
+		 ON CONFLICT(blob_id) DO UPDATE SET issued_at = excluded.issued_at, data = excluded.data`,
+		blobID,
+		record.IssuedAt.UTC().Format(time.RFC3339Nano),
+		payload,
+	)
+	return err
 }
 
 func (p *Persistent) Get(ctx context.Context, blobID string) ([]Location, error) {
 	var payload []byte
-	if err := p.db.View(func(tx *bolt.Tx) error {
-		value := tx.Bucket(recordsBucket).Get([]byte(blobID))
-		if value != nil {
-			payload = append([]byte(nil), value...)
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	if payload == nil {
+	err := p.db.QueryRow(`SELECT data FROM locator_records WHERE blob_id = ?`, blobID).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	var record SignedRecord
@@ -109,16 +110,27 @@ func (p *Persistent) Get(ctx context.Context, blobID string) ([]Location, error)
 }
 
 func (p *Persistent) Delete(ctx context.Context, blobID string) error {
-	return p.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(recordsBucket).Delete([]byte(blobID))
-	})
+	_, err := p.db.Exec(`DELETE FROM locator_records WHERE blob_id = ?`, blobID)
+	return err
 }
 
 func (p *Persistent) init() error {
-	return p.db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(recordsBucket)
-		return err
-	})
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA foreign_keys=ON",
+	}
+	for _, stmt := range pragmas {
+		if _, err := p.db.Exec(stmt); err != nil {
+			return fmt.Errorf("apply sqlite pragma %q: %w", stmt, err)
+		}
+	}
+	_, err := p.db.Exec(`CREATE TABLE IF NOT EXISTS locator_records (
+		blob_id TEXT PRIMARY KEY,
+		issued_at TEXT NOT NULL,
+		data BLOB NOT NULL
+	)`)
+	return err
 }
 
 func (p *Persistent) sign(blobID string, locations []Location) (SignedRecord, error) {

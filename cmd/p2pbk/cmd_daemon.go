@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -23,6 +22,7 @@ import (
 	"p2pbk/internal/peer/quota"
 	"p2pbk/internal/peer/responder"
 	"p2pbk/internal/scheduler"
+	"p2pbk/internal/secrets"
 	"p2pbk/internal/trust/identity"
 	"p2pbk/internal/trust/reputation"
 )
@@ -32,6 +32,11 @@ type daemonRuntime struct {
 	host  corehost.Host
 	db    *localdb.DB
 	dht   *p2pdht.DHT
+}
+
+type daemonDiscoveryServices struct {
+	local  *p2pdiscovery.LocalService
+	remote *p2pdiscovery.RemoteService
 }
 
 func newDaemonCommand() *cobra.Command {
@@ -64,11 +69,11 @@ func runDaemon(ctx context.Context, cfg config.Config, out interface{ Write([]by
 	if err := registerDaemonServices(cfg, runtime, out); err != nil {
 		return err
 	}
-	localDiscovery, err := startDaemonDiscovery(ctx, cfg, runtime, out)
+	discoveryServices, err := startDaemonDiscovery(ctx, cfg, runtime, out)
 	if err != nil {
 		return err
 	}
-	defer localDiscovery.Close()
+	defer discoveryServices.Close()
 
 	writeDaemonStartup(out, runtime, connected)
 	startDaemonJobs(ctx, cfg, runtime, out)
@@ -83,7 +88,17 @@ func openDaemonRuntime(ctx context.Context, cfg config.Config) (*daemonRuntime, 
 		return nil, err
 	}
 
-	host, err := p2phost.New(ctx, p2phost.Options{ListenAddrs: cfg.Network.ListenAddrs})
+	relayPeers, err := p2phost.ParseAddrInfos(cfg.Network.PublicDiscoveryPeers)
+	if err != nil {
+		return nil, fmt.Errorf("parse public discovery peer: %w", err)
+	}
+	host, err := p2phost.New(ctx, p2phost.Options{
+		ListenAddrs:       cfg.Network.ListenAddrs,
+		StaticRelays:      relayPeers,
+		EnableNATPortMap:  true,
+		EnableHolePunching: len(relayPeers) > 0,
+		ForcePrivateRelay: cfg.Network.ForcePrivateReachabilityForRelay,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +127,9 @@ func (r *daemonRuntime) Close() error {
 }
 
 func startDaemonNetworking(ctx context.Context, cfg config.Config, runtime *daemonRuntime) ([]peer.AddrInfo, error) {
-	connected, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, runtime.host, cfg.Network.BootstrapPeers, runtime.db)
+	bootstrapPeers := append([]string(nil), cfg.Network.BootstrapPeers...)
+	bootstrapPeers = append(bootstrapPeers, cfg.Network.PublicDiscoveryPeers...)
+	connected, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, runtime.host, bootstrapPeers, runtime.db)
 	if err != nil {
 		return nil, err
 	}
@@ -156,22 +173,51 @@ func registerDaemonServices(cfg config.Config, runtime *daemonRuntime, out inter
 	return nil
 }
 
-func startDaemonDiscovery(ctx context.Context, cfg config.Config, runtime *daemonRuntime, out interface{ Write([]byte) (int, error) }) (*p2pdiscovery.LocalService, error) {
+func startDaemonDiscovery(ctx context.Context, cfg config.Config, runtime *daemonRuntime, out interface{ Write([]byte) (int, error) }) (*daemonDiscoveryServices, error) {
+	services := &daemonDiscoveryServices{}
 	if err := p2pdiscovery.SaveConnectedPeers(runtime.db, runtime.host, "daemon"); err != nil {
 		return nil, err
 	}
-	if !cfg.Network.EnableLocalDiscovery {
-		return nil, nil
+	if cfg.Network.EnableRemoteDiscovery {
+		if runtime.dht == nil {
+			return nil, errors.New("remote discovery requires dht")
+		}
+		interval, err := time.ParseDuration(cfg.Network.RemoteDiscoveryInterval)
+		if err != nil {
+			return nil, fmt.Errorf("parse network.remote_discovery_interval: %w", err)
+		}
+		remoteDiscovery, err := p2pdiscovery.StartRemote(ctx, runtime.host, runtime.db, runtime.dht, cfg.Network.RemoteDiscoveryNamespace,
+			p2pdiscovery.WithRemoteInterval(interval),
+			p2pdiscovery.WithRemoteObserver(func(event p2pdiscovery.Event) {
+				writeDiscoveryEvent(out, event)
+			}),
+		)
+		if err != nil {
+			fmt.Fprintf(out, "remote discovery unavailable: %v\n", err)
+		} else {
+			services.remote = remoteDiscovery
+			fmt.Fprintf(out, "remote discovery: %s every %s\n", cfg.Network.RemoteDiscoveryNamespace, interval)
+		}
 	}
-	localDiscovery, err := p2pdiscovery.StartLocalWithOptions(ctx, runtime.host, runtime.db, cfg.Network.LocalDiscoveryService, p2pdiscovery.WithObserver(func(event p2pdiscovery.Event) {
-		writeDiscoveryEvent(out, event)
-	}))
-	if err != nil {
-		fmt.Fprintf(out, "local discovery unavailable: %v\n", err)
-		return nil, nil
+	if cfg.Network.EnableLocalDiscovery {
+		localDiscovery, err := p2pdiscovery.StartLocalWithOptions(ctx, runtime.host, runtime.db, cfg.Network.LocalDiscoveryService, p2pdiscovery.WithObserver(func(event p2pdiscovery.Event) {
+			writeDiscoveryEvent(out, event)
+		}))
+		if err != nil {
+			fmt.Fprintf(out, "local discovery unavailable: %v\n", err)
+		} else {
+			services.local = localDiscovery
+			fmt.Fprintf(out, "local discovery: %s\n", cfg.Network.LocalDiscoveryService)
+		}
 	}
-	fmt.Fprintf(out, "local discovery: %s\n", cfg.Network.LocalDiscoveryService)
-	return localDiscovery, nil
+	return services, nil
+}
+
+func (s *daemonDiscoveryServices) Close() error {
+	if s == nil {
+		return nil
+	}
+	return errors.Join(s.local.Close(), s.remote.Close())
 }
 
 func writeDiscoveryEvent(out interface{ Write([]byte) (int, error) }, event p2pdiscovery.Event) {
@@ -181,15 +227,15 @@ func writeDiscoveryEvent(out interface{ Write([]byte) (int, error) }, event p2pd
 	}
 	switch event.Type {
 	case p2pdiscovery.EventFound:
-		fmt.Fprintf(out, "local discovery found (%s): %s\n", source, event.PeerID)
+		fmt.Fprintf(out, "discovery found (%s): %s\n", source, event.PeerID)
 	case p2pdiscovery.EventConnected:
-		fmt.Fprintf(out, "local discovery connected (%s): %s\n", source, event.PeerID)
+		fmt.Fprintf(out, "discovery connected (%s): %s\n", source, event.PeerID)
 	case p2pdiscovery.EventSaved:
-		fmt.Fprintf(out, "local discovery saved (%s): %s\n", source, event.PeerID)
+		fmt.Fprintf(out, "discovery saved (%s): %s\n", source, event.PeerID)
 	case p2pdiscovery.EventConnectFailed:
-		fmt.Fprintf(out, "local discovery connect failed (%s): %s: %v\n", source, event.PeerID, event.Err)
+		fmt.Fprintf(out, "discovery connect failed (%s): %s: %v\n", source, event.PeerID, event.Err)
 	case p2pdiscovery.EventSaveFailed:
-		fmt.Fprintf(out, "local discovery save failed (%s): %s: %v\n", source, event.PeerID, event.Err)
+		fmt.Fprintf(out, "discovery save failed (%s): %s: %v\n", source, event.PeerID, event.Err)
 	}
 }
 
@@ -220,10 +266,10 @@ func startDaemonJobs(ctx context.Context, cfg config.Config, runtime *daemonRunt
 func loadDaemonIdentity(path string, cfg config.Config) (*identity.Identity, error) {
 	passphrase := cfg.Trust.IdentityPassphrase
 	if passphrase == "" {
-		passphrase = os.Getenv("P2PBK_IDENTITY_PASSPHRASE")
+		passphrase = secrets.FromEnv()
 	}
 	if passphrase == "" {
-		return nil, fmt.Errorf("identity passphrase is not set")
+		return nil, fmt.Errorf("password is not set")
 	}
 	return identity.Load(path, passphrase)
 }

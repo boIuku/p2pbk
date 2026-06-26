@@ -218,7 +218,7 @@ func removeFolderForm(path string) *formState {
 func passwordForm() *formState {
 	return &formState{
 		kind:  "password",
-		title: "Backup Store Password",
+		title: "p2pbk Password",
 		fields: []field{
 			{label: "Password", secret: true},
 		},
@@ -231,14 +231,14 @@ func (m *model) submitForm(form *formState) tea.Cmd {
 		m.password = form.fields[0].value
 		if m.password == "" {
 			return func() tea.Msg {
-				return actionMsg{err: fmt.Errorf("backup store password is required")}
+				return actionMsg{err: fmt.Errorf("p2pbk password is required")}
 			}
 		}
 		pending := m.pending
 		m.pending = nil
 		if pending == nil {
 			return func() tea.Msg {
-				return actionMsg{message: "backup store password saved for this session"}
+				return actionMsg{message: "p2pbk password saved for this session"}
 			}
 		}
 		switch pending.kind {
@@ -248,7 +248,7 @@ func (m *model) submitForm(form *formState) tea.Cmd {
 			return m.startRestore(pending.snapshot, pending.target)
 		default:
 			return func() tea.Msg {
-				return actionMsg{message: "backup store password saved for this session"}
+				return actionMsg{message: "p2pbk password saved for this session"}
 			}
 		}
 	case "add":

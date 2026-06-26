@@ -9,6 +9,7 @@ import (
 
 	"p2pbk/internal/config"
 	"p2pbk/internal/peer/localdb"
+	"p2pbk/internal/secrets"
 	"p2pbk/internal/trust/identity"
 )
 
@@ -50,7 +51,7 @@ func DefaultInitRequest() InitRequest {
 
 func Initialize(req InitRequest) (InitResult, error) {
 	if req.Passphrase == "" {
-		return InitResult{}, errors.New("identity passphrase is required")
+		return InitResult{}, errors.New("p2pbk password is required")
 	}
 	if req.DataDir == "" {
 		req.DataDir = config.Default().Node.DataDir
@@ -151,7 +152,7 @@ func Initialize(req InitRequest) (InitResult, error) {
 	return result, nil
 }
 
-func StartDaemon(configPath, identityPassphrase string) error {
+func StartDaemon(configPath, password string) error {
 	if configPath == "" {
 		return errors.New("config path is required")
 	}
@@ -171,9 +172,7 @@ func StartDaemon(configPath, identityPassphrase string) error {
 	defer logFile.Close()
 
 	cmd := exec.Command(exe, "--config", configPath, "daemon")
-	if identityPassphrase != "" {
-		cmd.Env = append(os.Environ(), "P2PBK_IDENTITY_PASSPHRASE="+identityPassphrase)
-	}
+	cmd.Env = secrets.Env(password)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {

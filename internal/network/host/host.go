@@ -12,8 +12,14 @@ import (
 )
 
 type Options struct {
-	ListenAddrs []string
-	PrivateKey  crypto.PrivKey
+	ListenAddrs        []string
+	AnnounceAddrs      []string
+	PrivateKey         crypto.PrivKey
+	StaticRelays       []peer.AddrInfo
+	EnableNATPortMap   bool
+	EnableRelayService bool
+	EnableHolePunching bool
+	ForcePrivateRelay  bool
 }
 
 func New(ctx context.Context, opts Options) (corehost.Host, error) {
@@ -25,8 +31,36 @@ func New(ctx context.Context, opts Options) (corehost.Host, error) {
 	libp2pOpts := []libp2p.Option{
 		libp2p.ListenAddrStrings(listenAddrs...),
 	}
+	if len(opts.AnnounceAddrs) > 0 {
+		announceAddrs := make([]multiaddr.Multiaddr, 0, len(opts.AnnounceAddrs))
+		for _, raw := range opts.AnnounceAddrs {
+			addr, err := multiaddr.NewMultiaddr(raw)
+			if err != nil {
+				return nil, fmt.Errorf("parse announce multiaddr %q: %w", raw, err)
+			}
+			announceAddrs = append(announceAddrs, addr)
+		}
+		libp2pOpts = append(libp2pOpts, libp2p.AddrsFactory(func([]multiaddr.Multiaddr) []multiaddr.Multiaddr {
+			return announceAddrs
+		}))
+	}
 	if opts.PrivateKey != nil {
 		libp2pOpts = append(libp2pOpts, libp2p.Identity(opts.PrivateKey))
+	}
+	if opts.EnableNATPortMap {
+		libp2pOpts = append(libp2pOpts, libp2p.NATPortMap())
+	}
+	if len(opts.StaticRelays) > 0 {
+		libp2pOpts = append(libp2pOpts, libp2p.EnableAutoRelayWithStaticRelays(opts.StaticRelays))
+	}
+	if opts.EnableRelayService {
+		libp2pOpts = append(libp2pOpts, libp2p.EnableRelayService())
+	}
+	if opts.EnableHolePunching {
+		libp2pOpts = append(libp2pOpts, libp2p.EnableHolePunching())
+	}
+	if opts.ForcePrivateRelay {
+		libp2pOpts = append(libp2pOpts, libp2p.ForceReachabilityPrivate())
 	}
 
 	h, err := libp2p.New(libp2pOpts...)
@@ -66,6 +100,18 @@ func ParseAddrInfo(addr string) (peer.AddrInfo, error) {
 		return peer.AddrInfo{}, fmt.Errorf("parse peer info %q: %w", addr, err)
 	}
 	return *info, nil
+}
+
+func ParseAddrInfos(addrs []string) ([]peer.AddrInfo, error) {
+	infos := make([]peer.AddrInfo, 0, len(addrs))
+	for _, addr := range addrs {
+		info, err := ParseAddrInfo(addr)
+		if err != nil {
+			return infos, err
+		}
+		infos = append(infos, info)
+	}
+	return infos, nil
 }
 
 func ConnectAddrs(ctx context.Context, h corehost.Host, addrs []string) ([]peer.AddrInfo, error) {

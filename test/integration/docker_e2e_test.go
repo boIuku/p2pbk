@@ -99,7 +99,7 @@ func TestDockerE2EBackupRestore(t *testing.T) {
 		"--max-space", "10GB",
 		"--offer-space", "0GB",
 		"--schedule", "daily",
-		"--passphrase", "test-pass",
+		"--passphrase", "test-repo-pass",
 		"--start=false",
 	}
 	for _, peer := range storagePeers {
@@ -114,7 +114,6 @@ func TestDockerE2EBackupRestore(t *testing.T) {
 	env := []string{
 		"exec", "-T",
 		"-e", "P2PBK_REPOSITORY_PASSWORD=test-repo-pass",
-		"-e", "P2PBK_IDENTITY_PASSPHRASE=test-pass",
 		"client", "p2pbk", "--config", "/work/client/config.json",
 	}
 	if out, err := docker.run(ctx, append(env, "repo", "init")...); err != nil {
@@ -244,7 +243,7 @@ func TestDockerE2ERestoreAfterMaxNodeLoss(t *testing.T) {
 		"--max-space", "10GB",
 		"--offer-space", "0GB",
 		"--schedule", "daily",
-		"--passphrase", "test-pass",
+		"--passphrase", "test-repo-pass",
 		"--start=false",
 	}
 	for _, peer := range storagePeers {
@@ -259,7 +258,6 @@ func TestDockerE2ERestoreAfterMaxNodeLoss(t *testing.T) {
 	env := []string{
 		"exec", "-T",
 		"-e", "P2PBK_REPOSITORY_PASSWORD=test-repo-pass",
-		"-e", "P2PBK_IDENTITY_PASSPHRASE=test-pass",
 		"client", "p2pbk", "--config", "/work/client/config.json",
 	}
 	if out, err := docker.run(ctx, append(env, "repo", "init")...); err != nil {

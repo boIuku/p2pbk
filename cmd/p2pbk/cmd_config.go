@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -73,6 +75,10 @@ func newConfigCommand() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "Min peers: %d\n", summary.MinPeers)
 			fmt.Fprintf(cmd.OutOrStdout(), "Local discovery: %t\n", summary.LocalDiscovery)
 			fmt.Fprintf(cmd.OutOrStdout(), "Local discovery service: %s\n", summary.LocalDiscoveryService)
+			fmt.Fprintf(cmd.OutOrStdout(), "Remote discovery: %t\n", summary.RemoteDiscovery)
+			fmt.Fprintf(cmd.OutOrStdout(), "Remote discovery namespace: %s\n", summary.RemoteDiscoveryNamespace)
+			fmt.Fprintf(cmd.OutOrStdout(), "Remote discovery interval: %s\n", summary.RemoteDiscoveryInterval)
+			fmt.Fprintf(cmd.OutOrStdout(), "Public discovery peers: %d\n", len(summary.PublicDiscoveryPeers))
 			fmt.Fprintf(cmd.OutOrStdout(), "Protected roots: %v\n", summary.ProtectedRoots)
 			fmt.Fprintf(cmd.OutOrStdout(), "Max protected data: %d bytes\n", summary.MaxProtectedBytes)
 			fmt.Fprintf(cmd.OutOrStdout(), "Schedule: %s\n", summary.Schedule)
@@ -141,6 +147,18 @@ func applyConfigSet(cfg *config.Config, key, value string) error {
 		cfg.Network.ProtocolID = value
 	case "network.local_discovery_service":
 		cfg.Network.LocalDiscoveryService = value
+	case "network.enable_remote_discovery":
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		cfg.Network.EnableRemoteDiscovery = enabled
+	case "network.remote_discovery_namespace":
+		cfg.Network.RemoteDiscoveryNamespace = value
+	case "network.remote_discovery_interval":
+		cfg.Network.RemoteDiscoveryInterval = value
+	case "network.public_discovery_peers":
+		cfg.Network.PublicDiscoveryPeers = splitCSV(value)
 	case "backup.max_bytes":
 		n, err := parseByteSize(value)
 		if err != nil {
@@ -159,4 +177,16 @@ func applyConfigSet(cfg *config.Config, key, value string) error {
 		return fmt.Errorf("unsupported config key %q", key)
 	}
 	return cfg.Validate()
+}
+
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	out := []string{}
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
 	"p2pbk/internal/app"
+	"p2pbk/internal/secrets"
 )
 
 type restoreOptions struct {
@@ -29,7 +29,7 @@ func newRestoreCommand() *cobra.Command {
 			result, err := app.RestoreSnapshot(context.Background(), app.RestoreRequest{
 				Config:     cfg,
 				ConfigPath: currentConfigPath(cfg),
-				Password:   os.Getenv("P2PBK_REPOSITORY_PASSWORD"),
+				Password:   secrets.FromEnv(),
 				Snapshot:   args[0],
 				Target:     args[1],
 			})

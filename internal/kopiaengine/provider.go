@@ -3,7 +3,6 @@ package kopiaengine
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 
@@ -11,6 +10,7 @@ import (
 
 	"p2pbk/internal/config"
 	"p2pbk/internal/node"
+	"p2pbk/internal/secrets"
 	"p2pbk/internal/trust/identity"
 )
 
@@ -43,10 +43,10 @@ func newStorage(ctx context.Context, opt *StorageOptions, isCreate bool) (kopiab
 		}
 		passphrase := cfg.Trust.IdentityPassphrase
 		if passphrase == "" {
-			passphrase = os.Getenv("P2PBK_IDENTITY_PASSPHRASE")
+			passphrase = secrets.FromEnv()
 		}
 		if passphrase == "" {
-			return nil, fmt.Errorf("identity passphrase is required for distributed p2pbk storage")
+			return nil, fmt.Errorf("password is required for distributed p2pbk storage")
 		}
 		id, err = identity.Load(paths.Identity, passphrase)
 		if err != nil {
@@ -67,7 +67,7 @@ func newStorage(ctx context.Context, opt *StorageOptions, isCreate bool) (kopiab
 
 func identityLoadError(err error) error {
 	if strings.Contains(err.Error(), "no identity matched any of the recipients") {
-		return fmt.Errorf("open p2pbk identity: wrong identity passphrase; set P2PBK_IDENTITY_PASSPHRASE to the passphrase used during `p2pbk init`")
+		return fmt.Errorf("open p2pbk identity: wrong password")
 	}
 	return fmt.Errorf("open p2pbk identity: %w", err)
 }
