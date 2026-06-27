@@ -149,10 +149,13 @@ func editConfigForm(cfg config.Config) *formState {
 			{label: "Incremental", value: fmt.Sprintf("%t", cfg.Backup.Incremental)},
 			{label: "Listen addrs", value: strings.Join(cfg.Network.ListenAddrs, ",")},
 			{label: "Bootstrap peers", value: strings.Join(cfg.Network.BootstrapPeers, ",")},
+			{label: "Public discovery peers", value: strings.Join(cfg.Network.PublicDiscoveryPeers, ",")},
 			{label: "Protocol ID", value: cfg.Network.ProtocolID},
 			{label: "Min peers", value: fmt.Sprintf("%d", cfg.Network.MinPeers)},
-			{label: "Local discovery", value: fmt.Sprintf("%t", cfg.Network.EnableLocalDiscovery)},
+			{label: "Discovery", value: cfg.Network.Discovery},
 			{label: "Discovery service", value: cfg.Network.LocalDiscoveryService},
+			{label: "Remote namespace", value: cfg.Network.RemoteDiscoveryNamespace},
+			{label: "Remote interval", value: cfg.Network.RemoteDiscoveryInterval},
 			{label: "Data shards", value: fmt.Sprintf("%d", cfg.Backup.DataShards)},
 			{label: "Parity shards", value: fmt.Sprintf("%d", cfg.Backup.ParityShards)},
 			{label: "Challenge interval", value: cfg.Trust.ChallengeInterval},
@@ -189,6 +192,7 @@ func initForm(configPath string) *formState {
 			{label: "Retention", value: req.Retention},
 			{label: "Display name"},
 			{label: "Bootstrap peers"},
+			{label: "Public discovery peers"},
 			{label: "Start service", value: "no"},
 		},
 	}
@@ -275,24 +279,25 @@ func (m *model) submitForm(form *formState) tea.Cmd {
 		}
 	case "init":
 		return func() tea.Msg {
-			start := strings.EqualFold(form.fields[10].value, "yes") || strings.EqualFold(form.fields[10].value, "y")
+			start := strings.EqualFold(form.fields[11].value, "yes") || strings.EqualFold(form.fields[11].value, "y")
 			protectedDirs := splitPathList(form.fields[1].value)
 			backupDir := ""
 			if len(protectedDirs) > 0 {
 				backupDir = protectedDirs[0]
 			}
 			req := app.InitRequest{
-				DataDir:        form.fields[0].value,
-				BackupDir:      backupDir,
-				ConfigPath:     form.fields[2].value,
-				Passphrase:     form.fields[3].value,
-				MaxSpace:       form.fields[4].value,
-				OfferSpace:     form.fields[5].value,
-				Schedule:       form.fields[6].value,
-				Retention:      form.fields[7].value,
-				DisplayName:    form.fields[8].value,
-				BootstrapPeers: splitCSV(form.fields[9].value),
-				Start:          start,
+				DataDir:              form.fields[0].value,
+				BackupDir:            backupDir,
+				ConfigPath:           form.fields[2].value,
+				Passphrase:           form.fields[3].value,
+				MaxSpace:             form.fields[4].value,
+				OfferSpace:           form.fields[5].value,
+				Schedule:             form.fields[6].value,
+				Retention:            form.fields[7].value,
+				DisplayName:          form.fields[8].value,
+				BootstrapPeers:       splitCSV(form.fields[9].value),
+				PublicDiscoveryPeers: splitCSV(form.fields[10].value),
+				Start:                start,
 			}
 			result, err := app.Initialize(req)
 			if err != nil {
@@ -421,23 +426,19 @@ func applyConfigForm(cfg *config.Config, form *formState) error {
 	if err != nil {
 		return err
 	}
-	minPeers, err := parseIntField("min peers", form.fields[14].value)
+	minPeers, err := parseIntField("min peers", form.fields[15].value)
 	if err != nil {
 		return err
 	}
-	localDiscovery, err := parseBoolField("local discovery", form.fields[15].value)
+	dataShards, err := parseIntField("data shards", form.fields[20].value)
 	if err != nil {
 		return err
 	}
-	dataShards, err := parseIntField("data shards", form.fields[17].value)
+	parityShards, err := parseIntField("parity shards", form.fields[21].value)
 	if err != nil {
 		return err
 	}
-	parityShards, err := parseIntField("parity shards", form.fields[18].value)
-	if err != nil {
-		return err
-	}
-	challengeMax, err := strconv.ParseInt(strings.TrimSpace(form.fields[21].value), 10, 64)
+	challengeMax, err := strconv.ParseInt(strings.TrimSpace(form.fields[24].value), 10, 64)
 	if err != nil {
 		return fmt.Errorf("challenge max: %w", err)
 	}
@@ -455,14 +456,17 @@ func applyConfigForm(cfg *config.Config, form *formState) error {
 	cfg.Backup.Incremental = incremental
 	cfg.Network.ListenAddrs = splitCSV(form.fields[11].value)
 	cfg.Network.BootstrapPeers = splitCSV(form.fields[12].value)
-	cfg.Network.ProtocolID = form.fields[13].value
+	cfg.Network.PublicDiscoveryPeers = splitCSV(form.fields[13].value)
+	cfg.Network.ProtocolID = form.fields[14].value
 	cfg.Network.MinPeers = minPeers
-	cfg.Network.EnableLocalDiscovery = localDiscovery
-	cfg.Network.LocalDiscoveryService = form.fields[16].value
+	cfg.Network.Discovery = form.fields[16].value
+	cfg.Network.LocalDiscoveryService = form.fields[17].value
+	cfg.Network.RemoteDiscoveryNamespace = form.fields[18].value
+	cfg.Network.RemoteDiscoveryInterval = form.fields[19].value
 	cfg.Backup.DataShards = dataShards
 	cfg.Backup.ParityShards = parityShards
-	cfg.Trust.ChallengeInterval = form.fields[19].value
-	cfg.Trust.ReputationWindow = form.fields[20].value
+	cfg.Trust.ChallengeInterval = form.fields[22].value
+	cfg.Trust.ReputationWindow = form.fields[23].value
 	cfg.Trust.ChallengeMaxLength = challengeMax
 	return cfg.Validate()
 }

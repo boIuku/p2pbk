@@ -11,6 +11,7 @@ import (
 
 	"p2pbk/internal/config"
 	"p2pbk/internal/kopiaengine"
+	"p2pbk/internal/logging"
 	"p2pbk/internal/peer/localdb"
 	"p2pbk/internal/secrets"
 )
@@ -22,6 +23,7 @@ type Options struct {
 	ConfigPath string
 	DB         *localdb.DB
 	Output     io.Writer
+	Logger     *logging.Logger
 }
 
 func Start(ctx context.Context, opts Options) {
@@ -30,27 +32,30 @@ func Start(ctx context.Context, opts Options) {
 		out = io.Discard
 	}
 	if opts.DB == nil {
-		fmt.Fprintln(out, "backup scheduler unavailable: localdb is required")
+		logSchedulerError(opts, out, "scheduler_unavailable", "backup scheduler unavailable: localdb is required", "localdb_required", nil, nil)
 		return
 	}
 	if strings.EqualFold(opts.Config.Backup.Schedule, "off") || strings.EqualFold(opts.Config.Backup.Schedule, "manual") {
-		fmt.Fprintf(out, "backup scheduler: disabled (%s)\n", opts.Config.Backup.Schedule)
+		logSchedulerInfo(opts, out, "scheduler_disabled", fmt.Sprintf("backup scheduler: disabled (%s)", opts.Config.Backup.Schedule), logging.Field{"schedule": opts.Config.Backup.Schedule})
 		return
 	}
 	if len(opts.Config.Backup.Roots) == 0 {
-		fmt.Fprintln(out, "backup scheduler: no protected roots configured")
+		logSchedulerInfo(opts, out, "scheduler_no_roots", "backup scheduler: no protected roots configured", nil)
 		return
 	}
 	interval, err := Interval(opts.Config.Backup.Schedule)
 	if err != nil {
-		fmt.Fprintf(out, "backup scheduler unavailable: %v\n", err)
+		logSchedulerError(opts, out, "scheduler_unavailable", "backup scheduler unavailable", "invalid_schedule", err, logging.Field{"schedule": opts.Config.Backup.Schedule})
 		return
 	}
 	if opts.ConfigPath == "" {
-		fmt.Fprintln(out, "backup scheduler unavailable: config path is required")
+		logSchedulerError(opts, out, "scheduler_unavailable", "backup scheduler unavailable: config path is required", "config_path_required", nil, nil)
 		return
 	}
-	fmt.Fprintf(out, "backup scheduler: %s (%s)\n", opts.Config.Backup.Schedule, interval)
+	logSchedulerInfo(opts, out, "scheduler_started", fmt.Sprintf("backup scheduler: %s (%s)", opts.Config.Backup.Schedule, interval), logging.Field{
+		"schedule":    opts.Config.Backup.Schedule,
+		"interval_ms": interval.Milliseconds(),
+	})
 
 	go func() {
 		RunDue(ctx, opts, interval, time.Now().UTC())
@@ -74,7 +79,7 @@ func RunDue(ctx context.Context, opts Options, interval time.Duration, now time.
 	}
 	password := secrets.FromEnv()
 	if password == "" {
-		fmt.Fprintln(out, "backup scheduler: P2PBK_REPOSITORY_PASSWORD is not set; scheduled backups paused")
+		logSchedulerError(opts, out, "scheduler_paused", "backup scheduler: P2PBK_REPOSITORY_PASSWORD is not set; scheduled backups paused", "password_required", nil, nil)
 		return
 	}
 	engine := kopiaengine.New(opts.ConfigPath, opts.Config, password)
@@ -84,7 +89,7 @@ func RunDue(ctx context.Context, opts Options, interval time.Duration, now time.
 		}
 		due, last, err := Due(opts.DB, root, interval, now)
 		if err != nil {
-			fmt.Fprintf(out, "backup scheduler: cannot read last backup for %s: %v\n", root, err)
+			logSchedulerError(opts, out, "scheduled_backup_skipped", "backup scheduler: cannot read last backup", "history_read_failed", err, logging.Field{"root": root})
 			continue
 		}
 		if !due {
@@ -93,15 +98,70 @@ func RunDue(ctx context.Context, opts Options, interval time.Duration, now time.
 		if last.IsZero() && !opts.Config.Backup.InitialFull {
 			continue
 		}
-		fmt.Fprintf(out, "backup scheduler: starting backup for %s\n", root)
+		operationID := "scheduled-backup-" + rootKey(root) + "-" + now.Format("20060102T150405Z")
+		started := time.Now()
+		logSchedulerEvent(opts, out, logging.Event{
+			Level:       "info",
+			Event:       "scheduled_backup_started",
+			Message:     "backup scheduler: starting backup",
+			OperationID: operationID,
+			Fields:      logging.Field{"root": root},
+		}, fmt.Sprintf("backup scheduler: starting backup for %s", root))
 		result, err := engine.Backup(ctx, root, "scheduled")
+		duration := time.Since(started)
 		if err != nil {
 			_ = opts.DB.PutSetting(LastFailureKey(root), []byte(now.Format(time.RFC3339Nano)+" "+err.Error()))
-			fmt.Fprintf(out, "backup scheduler: backup failed for %s: %v\n", root, err)
+			logSchedulerEvent(opts, out, logging.Event{
+				Level:       "error",
+				Event:       "scheduled_backup_failed",
+				Message:     "backup scheduler: backup failed",
+				OperationID: operationID,
+				DurationMS:  duration.Milliseconds(),
+				ErrorCode:   "backup_failed",
+				Error:       err.Error(),
+				Fields:      logging.Field{"root": root},
+			}, fmt.Sprintf("backup scheduler: backup failed for %s: %v", root, err))
 			continue
 		}
 		_ = opts.DB.PutSetting(LastSuccessKey(root), []byte(now.Format(time.RFC3339Nano)))
-		fmt.Fprintf(out, "backup scheduler: snapshot %s saved for %s\n", result.ManifestID, result.Source)
+		logSchedulerEvent(opts, out, logging.Event{
+			Level:       "info",
+			Event:       "scheduled_backup_completed",
+			Message:     "backup scheduler: snapshot saved",
+			OperationID: operationID,
+			DurationMS:  duration.Milliseconds(),
+			Fields: logging.Field{
+				"root":        root,
+				"snapshot_id": string(result.ManifestID),
+				"source":      fmt.Sprint(result.Source),
+			},
+		}, fmt.Sprintf("backup scheduler: snapshot %s saved for %s", result.ManifestID, result.Source))
+	}
+}
+
+func logSchedulerInfo(opts Options, out io.Writer, event, message string, fields logging.Field) {
+	logSchedulerEvent(opts, out, logging.Event{Level: "info", Event: event, Message: message, Fields: fields}, message)
+}
+
+func logSchedulerError(opts Options, out io.Writer, event, message, code string, err error, fields logging.Field) {
+	logEvent := logging.Event{Level: "error", Event: event, Message: message, ErrorCode: code, Fields: fields}
+	if err != nil {
+		logEvent.Error = err.Error()
+	}
+	plain := message
+	if err != nil {
+		plain = fmt.Sprintf("%s: %v", message, err)
+	}
+	logSchedulerEvent(opts, out, logEvent, plain)
+}
+
+func logSchedulerEvent(opts Options, out io.Writer, event logging.Event, plain string) {
+	if opts.Logger != nil {
+		opts.Logger.Write(event)
+		return
+	}
+	if out != nil {
+		fmt.Fprintln(out, plain)
 	}
 }
 

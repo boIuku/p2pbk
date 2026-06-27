@@ -89,6 +89,9 @@ func ResetLocalState(req ResetRequest) (ResetResult, error) {
 }
 
 func enforceStorageResetPolicy(storeDir, dataDir string, roots []string, req ResetRequest) error {
+	if !isUnder(storeDir, dataDir) {
+		return nil
+	}
 	storeHasData, err := dirHasEntries(storeDir)
 	if err != nil {
 		return fmt.Errorf("inspect store dir %s: %w", storeDir, err)

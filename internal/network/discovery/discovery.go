@@ -49,6 +49,48 @@ type Event struct {
 	Err    error
 }
 
+type PeerFilter struct {
+	ignored map[peer.ID]struct{}
+}
+
+func NewPeerFilter(infos []peer.AddrInfo) PeerFilter {
+	filter := PeerFilter{ignored: map[peer.ID]struct{}{}}
+	for _, info := range infos {
+		if info.ID != "" {
+			filter.ignored[info.ID] = struct{}{}
+		}
+	}
+	return filter
+}
+
+func (f PeerFilter) Ignored(id peer.ID) bool {
+	if id == "" {
+		return true
+	}
+	_, ok := f.ignored[id]
+	return ok
+}
+
+func (f PeerFilter) IDs() []peer.ID {
+	out := make([]peer.ID, 0, len(f.ignored))
+	for id := range f.ignored {
+		out = append(out, id)
+	}
+	return out
+}
+
+type connectOptions struct {
+	filter PeerFilter
+}
+
+type ConnectOption func(*connectOptions)
+
+func WithIgnoredPeers(filter PeerFilter) ConnectOption {
+	return func(opts *connectOptions) {
+		opts.filter = filter
+	}
+}
+
 type localOptions struct {
 	observer func(Event)
 }
@@ -231,7 +273,11 @@ func sanitizeRegistryName(value string) string {
 	return replacer.Replace(value)
 }
 
-func ConnectConfiguredAndSaved(ctx context.Context, h corehost.Host, configured []string, store PeerStore) ([]peer.AddrInfo, error) {
+func ConnectConfiguredAndSaved(ctx context.Context, h corehost.Host, configured []string, store PeerStore, opts ...ConnectOption) ([]peer.AddrInfo, error) {
+	options := connectOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
 	addrs := append([]string(nil), configured...)
 	if store != nil {
 		records, err := store.ListPeers()
@@ -250,7 +296,7 @@ func ConnectConfiguredAndSaved(ctx context.Context, h corehost.Host, configured 
 		if err != nil {
 			continue
 		}
-		if info.ID == h.ID() {
+		if info.ID == h.ID() || options.filter.Ignored(info.ID) {
 			continue
 		}
 		if err := p2phost.Connect(ctx, h, info); err != nil {
@@ -267,12 +313,16 @@ func ConnectConfiguredAndSaved(ctx context.Context, h corehost.Host, configured 
 	return connected, nil
 }
 
-func SaveConnectedPeers(store PeerStore, h corehost.Host, source string) error {
+func SaveConnectedPeers(store PeerStore, h corehost.Host, source string, opts ...ConnectOption) error {
+	options := connectOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
 	if store == nil {
 		return nil
 	}
 	for _, id := range h.Network().Peers() {
-		if id == "" || id == h.ID() {
+		if id == "" || id == h.ID() || options.filter.Ignored(id) {
 			continue
 		}
 		info := peer.AddrInfo{ID: id, Addrs: h.Peerstore().Addrs(id)}

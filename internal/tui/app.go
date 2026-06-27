@@ -678,7 +678,7 @@ func (m model) configSettingsView() string {
 		{"Max protected", formatBytes(m.summary.MaxProtectedBytes)},
 		{"Schedule", m.summary.Schedule},
 		{"Retention", m.summary.Retention},
-		{"Local discovery", fmt.Sprintf("%t", m.summary.LocalDiscovery)},
+		{"Discovery", m.summary.Discovery},
 		{"Bootstrap peers", fmt.Sprintf("%d", len(m.summary.BootstrapPeers))},
 	}
 	return renderTable(columns, rows, m.selected, true, m.fullTableHeight())

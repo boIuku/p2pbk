@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	defaultDataDir    = "~/.p2pbk"
-	defaultProtocolID = "/p2pbk/1.0.0"
+	defaultDataDir                  = "~/.p2pbk"
+	defaultProtocolID               = "/p2pbk/1.0.0"
 	defaultRemoteDiscoveryNamespace = "p2pbk/storage/v1"
 )
 
@@ -25,11 +25,10 @@ func applyDefaults(v *viper.Viper) {
 	v.SetDefault("network.listen_addrs", []string{"/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic-v1"})
 	v.SetDefault("network.bootstrap_peers", []string{})
 	v.SetDefault("network.public_discovery_peers", []string{})
+	v.SetDefault("network.discovery", "remote")
 	v.SetDefault("network.protocol_id", defaultProtocolID)
 	v.SetDefault("network.min_peers", 3)
-	v.SetDefault("network.enable_local_discovery", true)
 	v.SetDefault("network.local_discovery_service", "_p2pbk._udp")
-	v.SetDefault("network.enable_remote_discovery", true)
 	v.SetDefault("network.remote_discovery_namespace", defaultRemoteDiscoveryNamespace)
 	v.SetDefault("network.remote_discovery_interval", "1m")
 	v.SetDefault("network.force_private_reachability_for_relay", false)

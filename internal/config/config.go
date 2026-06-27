@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mitchellh/mapstructure"
 	"github.com/spf13/viper"
@@ -35,11 +36,10 @@ type NetworkConfig struct {
 	ListenAddrs                      []string `mapstructure:"listen_addrs" json:"listen_addrs"`
 	BootstrapPeers                   []string `mapstructure:"bootstrap_peers" json:"bootstrap_peers"`
 	PublicDiscoveryPeers             []string `mapstructure:"public_discovery_peers" json:"public_discovery_peers"`
+	Discovery                        string   `mapstructure:"discovery" json:"discovery"`
 	ProtocolID                       string   `mapstructure:"protocol_id" json:"protocol_id"`
 	MinPeers                         int      `mapstructure:"min_peers" json:"min_peers"`
-	EnableLocalDiscovery             bool     `mapstructure:"enable_local_discovery" json:"enable_local_discovery"`
 	LocalDiscoveryService            string   `mapstructure:"local_discovery_service" json:"local_discovery_service"`
-	EnableRemoteDiscovery            bool     `mapstructure:"enable_remote_discovery" json:"enable_remote_discovery"`
 	RemoteDiscoveryNamespace         string   `mapstructure:"remote_discovery_namespace" json:"remote_discovery_namespace"`
 	RemoteDiscoveryInterval          string   `mapstructure:"remote_discovery_interval" json:"remote_discovery_interval"`
 	ForcePrivateReachabilityForRelay bool     `mapstructure:"force_private_reachability_for_relay" json:"force_private_reachability_for_relay"`
@@ -127,11 +127,10 @@ func FromViper(v *viper.Viper) Config {
 			ListenAddrs:                      v.GetStringSlice("network.listen_addrs"),
 			BootstrapPeers:                   v.GetStringSlice("network.bootstrap_peers"),
 			PublicDiscoveryPeers:             v.GetStringSlice("network.public_discovery_peers"),
+			Discovery:                        v.GetString("network.discovery"),
 			ProtocolID:                       v.GetString("network.protocol_id"),
 			MinPeers:                         v.GetInt("network.min_peers"),
-			EnableLocalDiscovery:             v.GetBool("network.enable_local_discovery"),
 			LocalDiscoveryService:            v.GetString("network.local_discovery_service"),
-			EnableRemoteDiscovery:            v.GetBool("network.enable_remote_discovery"),
 			RemoteDiscoveryNamespace:         v.GetString("network.remote_discovery_namespace"),
 			RemoteDiscoveryInterval:          v.GetString("network.remote_discovery_interval"),
 			ForcePrivateReachabilityForRelay: v.GetBool("network.force_private_reachability_for_relay"),
@@ -182,14 +181,24 @@ func (c Config) Validate() error {
 	if c.Network.MinPeers < 0 {
 		errs = append(errs, errors.New("network.min_peers must be non-negative"))
 	}
-	if c.Network.EnableLocalDiscovery && c.Network.LocalDiscoveryService == "" {
-		errs = append(errs, errors.New("network.local_discovery_service is required when local discovery is enabled"))
-	}
-	if c.Network.EnableRemoteDiscovery && c.Network.RemoteDiscoveryNamespace == "" {
-		errs = append(errs, errors.New("network.remote_discovery_namespace is required when remote discovery is enabled"))
-	}
-	if c.Network.EnableRemoteDiscovery && c.Network.RemoteDiscoveryInterval == "" {
-		errs = append(errs, errors.New("network.remote_discovery_interval is required when remote discovery is enabled"))
+	switch c.Network.Discovery {
+	case "remote":
+		if c.Network.RemoteDiscoveryNamespace == "" {
+			errs = append(errs, errors.New("network.remote_discovery_namespace is required when network.discovery is remote"))
+		}
+		if c.Network.RemoteDiscoveryInterval == "" {
+			errs = append(errs, errors.New("network.remote_discovery_interval is required when network.discovery is remote"))
+		}
+		if interval, err := time.ParseDuration(c.Network.RemoteDiscoveryInterval); err != nil || interval <= 0 {
+			errs = append(errs, errors.New("network.remote_discovery_interval must be a positive duration"))
+		}
+	case "local":
+		if c.Network.LocalDiscoveryService == "" {
+			errs = append(errs, errors.New("network.local_discovery_service is required when network.discovery is local"))
+		}
+	case "disabled":
+	default:
+		errs = append(errs, fmt.Errorf("network.discovery must be remote, local, or disabled"))
 	}
 	if c.Backup.DataShards <= 0 {
 		errs = append(errs, errors.New("backup.data_shards must be positive"))

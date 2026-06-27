@@ -157,7 +157,7 @@ func CollectStatus(ctx context.Context, cfg config.Config, configPath, password 
 		status.LocalDBStatus = "unavailable: " + err.Error()
 	}
 
-	if len(cfg.Network.BootstrapPeers) > 0 || len(status.Peers) > 0 {
+	if len(cfg.Network.BootstrapPeers) > 0 || len(cfg.Network.PublicDiscoveryPeers) > 0 || len(status.Peers) > 0 {
 		status.StorageMode = "distributed"
 	}
 

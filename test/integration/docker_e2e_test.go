@@ -462,11 +462,11 @@ func dockerNodeConfig(dataDir string, bootstrapPeers []string, offerBytes int64)
 				"/ip4/0.0.0.0/tcp/4001",
 			},
 			"bootstrap_peers": bootstrapPeers,
+			"discovery":       "disabled",
 			"protocol_id":     "/p2pbk/1.0.0",
 			"min_peers":       0,
-			// Docker e2e tests use explicit service-name peers. Keep mDNS disabled
-			// here so LAN discovery can be tested separately without container noise.
-			"enable_local_discovery":  false,
+			// Docker e2e tests use explicit service-name peers. Keep automatic
+			// discovery disabled so LAN/remote discovery can be tested separately.
 			"local_discovery_service": "_p2pbk._udp",
 		},
 		"backup": map[string]any{

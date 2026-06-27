@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/kopia/kopia/repo/blob"
+	"github.com/libp2p/go-libp2p/core/peer"
 
 	"p2pbk/internal/backend/p2p"
 	"p2pbk/internal/config"
@@ -66,7 +67,21 @@ func ShouldUseDistributedStorage(cfg config.Config) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return len(peers) > 0, nil
+	filter, err := publicDiscoveryFilter(cfg)
+	if err != nil {
+		return false, err
+	}
+	for _, record := range peers {
+		id, err := peerID(record.ID)
+		if err == nil && !filter.Ignored(id) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func peerID(value string) (peer.ID, error) {
+	return peer.Decode(value)
 }
 
 func (b *BlobStorage) Close(ctx context.Context) error {

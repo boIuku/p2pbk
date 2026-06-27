@@ -17,6 +17,7 @@ import (
 	"p2pbk/internal/config"
 	p2pdht "p2pbk/internal/network/dht"
 	p2pdiscovery "p2pbk/internal/network/discovery"
+	p2phost "p2pbk/internal/network/host"
 	"p2pbk/internal/peer/localdb"
 	"p2pbk/internal/trust/identity"
 )
@@ -41,11 +42,20 @@ func OpenDistributedStorage(ctx context.Context, cfg config.Config, h corehost.H
 		closeStore = func() {}
 	}
 
-	if _, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, h, cfg.Network.BootstrapPeers, store); err != nil {
+	infrastructureFilter, err := publicDiscoveryFilter(cfg)
+	if err != nil {
 		closeStore()
 		return nil, err
 	}
-	if err := p2pdiscovery.SaveConnectedPeers(store, h, "storage"); err != nil {
+	if _, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, h, cfg.Network.PublicDiscoveryPeers, nil); err != nil {
+		closeStore()
+		return nil, err
+	}
+	if _, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, h, cfg.Network.BootstrapPeers, store, p2pdiscovery.WithIgnoredPeers(infrastructureFilter)); err != nil {
+		closeStore()
+		return nil, err
+	}
+	if err := p2pdiscovery.SaveConnectedPeers(store, h, "storage", p2pdiscovery.WithIgnoredPeers(infrastructureFilter)); err != nil {
 		closeStore()
 		return nil, err
 	}
@@ -67,7 +77,7 @@ func OpenDistributedStorage(ctx context.Context, cfg config.Config, h corehost.H
 		closeStore()
 		return nil, err
 	}
-	st, peers, err := openDistributedStorageWithConnectedPeers(cfg, h, loc, store)
+	st, peers, err := openDistributedStorageWithConnectedPeers(cfg, h, loc, store, infrastructureFilter)
 	if err != nil {
 		_ = dht.Close()
 		closeStore()
@@ -92,18 +102,25 @@ func OpenDistributedStorageWithLocator(ctx context.Context, cfg config.Config, h
 	}
 	defer closeStore()
 
-	if _, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, h, cfg.Network.BootstrapPeers, store); err != nil {
+	infrastructureFilter, err := publicDiscoveryFilter(cfg)
+	if err != nil {
 		return nil, nil, err
 	}
-	if err := p2pdiscovery.SaveConnectedPeers(store, h, "storage"); err != nil {
+	if _, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, h, cfg.Network.PublicDiscoveryPeers, nil); err != nil {
+		return nil, nil, err
+	}
+	if _, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, h, cfg.Network.BootstrapPeers, store, p2pdiscovery.WithIgnoredPeers(infrastructureFilter)); err != nil {
+		return nil, nil, err
+	}
+	if err := p2pdiscovery.SaveConnectedPeers(store, h, "storage", p2pdiscovery.WithIgnoredPeers(infrastructureFilter)); err != nil {
 		return nil, nil, err
 	}
 
-	return openDistributedStorageWithConnectedPeers(cfg, h, loc, nil)
+	return openDistributedStorageWithConnectedPeers(cfg, h, loc, nil, infrastructureFilter)
 }
 
-func openDistributedStorageWithConnectedPeers(cfg config.Config, h corehost.Host, loc locator.Locator, store *localdb.DB) (*p2p.Storage, []peer.ID, error) {
-	peers := connectedPeers(h)
+func openDistributedStorageWithConnectedPeers(cfg config.Config, h corehost.Host, loc locator.Locator, store *localdb.DB, filter p2pdiscovery.PeerFilter) (*p2p.Storage, []peer.ID, error) {
+	peers := connectedStoragePeers(h, filter)
 	minPeers := cfg.Network.MinPeers
 	if minPeers == 0 {
 		minPeers = 1
@@ -170,10 +187,10 @@ func (d *DistributedStorage) Close(ctx context.Context) error {
 	return out
 }
 
-func connectedPeers(h corehost.Host) []peer.ID {
+func connectedStoragePeers(h corehost.Host, filter p2pdiscovery.PeerFilter) []peer.ID {
 	uniq := map[peer.ID]struct{}{}
 	for _, id := range h.Network().Peers() {
-		if id == "" || id == h.ID() {
+		if id == "" || id == h.ID() || filter.Ignored(id) {
 			continue
 		}
 		uniq[id] = struct{}{}
@@ -191,6 +208,14 @@ func owner(cfg config.Config) string {
 		return cfg.Node.DisplayName
 	}
 	return "local"
+}
+
+func publicDiscoveryFilter(cfg config.Config) (p2pdiscovery.PeerFilter, error) {
+	infos, err := p2phost.ParseAddrInfos(cfg.Network.PublicDiscoveryPeers)
+	if err != nil {
+		return p2pdiscovery.PeerFilter{}, fmt.Errorf("parse public discovery peer: %w", err)
+	}
+	return p2pdiscovery.NewPeerFilter(infos), nil
 }
 
 func openPeerStore(cfg config.Config) (*localdb.DB, func(), error) {

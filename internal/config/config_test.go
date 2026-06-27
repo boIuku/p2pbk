@@ -16,6 +16,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Network.ProtocolID != defaultProtocolID {
 		t.Fatalf("protocol id = %q, want %q", cfg.Network.ProtocolID, defaultProtocolID)
 	}
+	if cfg.Network.Discovery != "remote" {
+		t.Fatalf("discovery = %q, want remote", cfg.Network.Discovery)
+	}
+	if cfg.Network.RemoteDiscoveryNamespace != defaultRemoteDiscoveryNamespace {
+		t.Fatalf("remote namespace = %q, want %q", cfg.Network.RemoteDiscoveryNamespace, defaultRemoteDiscoveryNamespace)
+	}
 	if cfg.Backup.DataShards != 6 {
 		t.Fatalf("data shards = %d, want 6", cfg.Backup.DataShards)
 	}
@@ -30,6 +36,30 @@ func TestValidateRejectsInvalidShardCounts(t *testing.T) {
 	cfg.Backup.DataShards = 0
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate returned nil error for invalid data shard count")
+	}
+}
+
+func TestValidateRejectsInvalidRemoteDiscoveryInterval(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	cfg.Network.RemoteDiscoveryInterval = "not-a-duration"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate returned nil error for invalid remote discovery interval")
+	}
+}
+
+func TestValidateRejectsInvalidDiscoveryMode(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	cfg.Network.Discovery = "both"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate returned nil error for invalid discovery mode")
 	}
 }
 

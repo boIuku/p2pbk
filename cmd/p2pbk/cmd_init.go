@@ -1,36 +1,28 @@
 package main
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
 
 	"github.com/spf13/cobra"
 
 	"p2pbk/internal/app"
 	"p2pbk/internal/config"
-	"p2pbk/internal/peer/localdb"
 	"p2pbk/internal/secrets"
-	"p2pbk/internal/trust/identity"
 )
 
 type initOptions struct {
-	dataDir        string
-	backupDir      string
-	maxSpace       string
-	offerSpace     string
-	schedule       string
-	retention      string
-	configPath     string
-	passphrase     string
-	start          bool
-	displayName    string
-	bootstrapPeers []string
+	dataDir              string
+	backupDir            string
+	maxSpace             string
+	offerSpace           string
+	schedule             string
+	retention            string
+	configPath           string
+	passphrase           string
+	start                bool
+	displayName          string
+	bootstrapPeers       []string
 	publicDiscoveryPeers []string
 }
 
@@ -74,159 +66,34 @@ func newInitCommand() *cobra.Command {
 }
 
 func runInit(opts initOptions, out io.Writer) error {
-	if opts.passphrase == "" {
-		return errors.New("p2pbk password is required; use --passphrase or P2PBK_REPOSITORY_PASSWORD")
-	}
-
-	cfg := config.Default()
-	cfg.Node.DataDir = opts.dataDir
-	cfg.Node.DisplayName = opts.displayName
-	cfg.Storage.StoreDir = "store"
-	cfg.Storage.CacheDir = "cache"
-	cfg.Backup.Schedule = opts.schedule
-	cfg.Backup.Retention = opts.retention
-	cfg.Backup.InitialFull = true
-	cfg.Backup.Incremental = true
-	cfg.Network.BootstrapPeers = opts.bootstrapPeers
-	cfg.Network.PublicDiscoveryPeers = opts.publicDiscoveryPeers
-
-	maxBytes, err := parseByteSize(opts.maxSpace)
-	if err != nil {
-		return fmt.Errorf("parse --max-space: %w", err)
-	}
-	offerBytes, err := parseByteSize(opts.offerSpace)
-	if err != nil {
-		return fmt.Errorf("parse --offer-space: %w", err)
-	}
-	cfg.Backup.MaxBytes = maxBytes
-	cfg.Storage.OfferBytes = offerBytes
-	if opts.backupDir != "" {
-		cfg.Backup.Roots = []string{opts.backupDir}
-	}
-
-	paths, err := cfg.Paths()
+	result, err := app.Initialize(app.InitRequest{
+		DataDir:              opts.dataDir,
+		BackupDir:            opts.backupDir,
+		MaxSpace:             opts.maxSpace,
+		OfferSpace:           opts.offerSpace,
+		Schedule:             opts.schedule,
+		Retention:            opts.retention,
+		ConfigPath:           opts.configPath,
+		Passphrase:           opts.passphrase,
+		Start:                opts.start,
+		DisplayName:          opts.displayName,
+		BootstrapPeers:       opts.bootstrapPeers,
+		PublicDiscoveryPeers: opts.publicDiscoveryPeers,
+	})
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(paths.StoreDir, 0o700); err != nil {
-		return fmt.Errorf("create store directory: %w", err)
-	}
-	if err := os.MkdirAll(paths.CacheDir, 0o700); err != nil {
-		return fmt.Errorf("create cache directory: %w", err)
-	}
 
-	id, err := identity.Create(paths.Identity, opts.passphrase)
-	if err != nil {
-		return fmt.Errorf("create identity: %w", err)
-	}
-
-	db, err := localdb.Open(paths.LocalDB)
-	if err != nil {
-		return err
-	}
-	if err := db.PutSetting("identity_fingerprint", []byte(id.Fingerprint())); err != nil {
-		_ = db.Close()
-		return err
-	}
-	if err := db.Close(); err != nil {
-		return fmt.Errorf("close localdb: %w", err)
-	}
-
-	configPath := opts.configPath
-	if configPath == "" {
-		configPath = filepath.Join(paths.DataDir, "config.json")
-	}
-	if err := writeInitialConfig(configPath, cfg); err != nil {
-		return err
-	}
-
-	fmt.Fprintf(out, "initialized p2pbk node at %s\n", paths.DataDir)
-	fmt.Fprintf(out, "config: %s\n", configPath)
-	fmt.Fprintf(out, "identity fingerprint: %s\n", id.Fingerprint())
-	fmt.Fprintf(out, "protecting up to %s from %d director%s\n", formatBytes(cfg.Backup.MaxBytes), len(cfg.Backup.Roots), plural(len(cfg.Backup.Roots)))
-	fmt.Fprintf(out, "network storage required for that policy: about %s\n", formatBytes(erasureStorageBytes(cfg.Backup.MaxBytes, cfg.Backup.DataShards, cfg.Backup.ParityShards)))
-	fmt.Fprintf(out, "offering up to %s to other peers\n", formatBytes(cfg.Storage.OfferBytes))
-	if opts.start {
-		if err := app.StartDaemon(configPath, opts.passphrase); err != nil {
-			return err
-		}
+	fmt.Fprintf(out, "initialized p2pbk node at %s\n", result.DataDir)
+	fmt.Fprintf(out, "config: %s\n", result.ConfigPath)
+	fmt.Fprintf(out, "identity fingerprint: %s\n", result.IdentityFingerprint)
+	fmt.Fprintf(out, "protecting up to %s from %d director%s\n", app.FormatBytes(result.MaxProtectedBytes), result.ProtectedRoots, plural(result.ProtectedRoots))
+	fmt.Fprintf(out, "network storage required for that policy: about %s\n", app.FormatBytes(result.NetworkStorageBytes))
+	fmt.Fprintf(out, "offering up to %s to other peers\n", app.FormatBytes(result.OfferBytes))
+	if result.Started {
 		fmt.Fprintln(out, "p2pbk is running in the background")
 	}
 	return nil
-}
-
-func writeInitialConfig(path string, cfg config.Config) error {
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("config already exists: %s", path)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
-	}
-	content, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode config: %w", err)
-	}
-	content = append(content, '\n')
-	return os.WriteFile(path, []byte(content), 0o600)
-}
-
-func parseByteSize(value string) (int64, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return 0, errors.New("size is required")
-	}
-	upper := strings.ToUpper(trimmed)
-	multipliers := []struct {
-		suffix string
-		value  int64
-	}{
-		{"TIB", 1 << 40},
-		{"TB", 1_000_000_000_000},
-		{"GIB", 1 << 30},
-		{"GB", 1_000_000_000},
-		{"MIB", 1 << 20},
-		{"MB", 1_000_000},
-		{"KIB", 1 << 10},
-		{"KB", 1_000},
-		{"B", 1},
-	}
-	for _, m := range multipliers {
-		if strings.HasSuffix(upper, m.suffix) {
-			n, err := strconv.ParseFloat(strings.TrimSpace(trimmed[:len(trimmed)-len(m.suffix)]), 64)
-			if err != nil {
-				return 0, err
-			}
-			if n < 0 {
-				return 0, errors.New("size must be non-negative")
-			}
-			return int64(n * float64(m.value)), nil
-		}
-	}
-	n, err := strconv.ParseInt(trimmed, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	if n < 0 {
-		return 0, errors.New("size must be non-negative")
-	}
-	return n, nil
-}
-
-func formatBytes(value int64) string {
-	const gb = int64(1_000_000_000)
-	if value >= gb && value%gb == 0 {
-		return fmt.Sprintf("%dGB", value/gb)
-	}
-	return fmt.Sprintf("%d bytes", value)
-}
-
-func erasureStorageBytes(sourceBytes int64, dataShards, parityShards int) int64 {
-	if sourceBytes <= 0 || dataShards <= 0 {
-		return 0
-	}
-	return sourceBytes * int64(dataShards+parityShards) / int64(dataShards)
 }
 
 func plural(count int) string {

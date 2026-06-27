@@ -14,17 +14,18 @@ import (
 )
 
 type InitRequest struct {
-	DataDir        string
-	BackupDir      string
-	MaxSpace       string
-	OfferSpace     string
-	Schedule       string
-	Retention      string
-	ConfigPath     string
-	Passphrase     string
-	Start          bool
-	DisplayName    string
-	BootstrapPeers []string
+	DataDir              string
+	BackupDir            string
+	MaxSpace             string
+	OfferSpace           string
+	Schedule             string
+	Retention            string
+	ConfigPath           string
+	Passphrase           string
+	Start                bool
+	DisplayName          string
+	BootstrapPeers       []string
+	PublicDiscoveryPeers []string
 }
 
 type InitResult struct {
@@ -32,6 +33,7 @@ type InitResult struct {
 	DataDir             string
 	IdentityFingerprint string
 	ProtectedRoots      int
+	MaxProtectedBytes   int64
 	NetworkStorageBytes int64
 	OfferBytes          int64
 	Started             bool
@@ -79,6 +81,7 @@ func Initialize(req InitRequest) (InitResult, error) {
 	cfg.Backup.InitialFull = true
 	cfg.Backup.Incremental = true
 	cfg.Network.BootstrapPeers = req.BootstrapPeers
+	cfg.Network.PublicDiscoveryPeers = req.PublicDiscoveryPeers
 
 	maxBytes, err := ParseByteSize(req.MaxSpace)
 	if err != nil {
@@ -140,6 +143,7 @@ func Initialize(req InitRequest) (InitResult, error) {
 		DataDir:             paths.DataDir,
 		IdentityFingerprint: id.Fingerprint(),
 		ProtectedRoots:      len(cfg.Backup.Roots),
+		MaxProtectedBytes:   cfg.Backup.MaxBytes,
 		NetworkStorageBytes: ErasureStorageBytes(cfg.Backup.MaxBytes, cfg.Backup.DataShards, cfg.Backup.ParityShards),
 		OfferBytes:          cfg.Storage.OfferBytes,
 	}

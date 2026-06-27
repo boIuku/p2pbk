@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"p2pbk/internal/app"
 	"p2pbk/internal/config"
 )
 
@@ -149,7 +150,7 @@ func TestRunResetDeletesProtectedDataWithConfirmation(t *testing.T) {
 	err := runReset(cfg, "", resetOptions{
 		yes:                        true,
 		deleteProtectedData:        true,
-		confirmDeleteProtectedData: deleteProtectedDataConfirmation,
+		confirmDeleteProtectedData: app.DeleteProtectedDataConfirmation,
 	}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("runReset returned error: %v", err)
@@ -164,7 +165,9 @@ func TestValidateResetTargetRejectsCurrentWorkingDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Getwd returned error: %v", err)
 	}
-	if err := validateResetTarget(cwd); err == nil {
-		t.Fatal("validateResetTarget returned nil for cwd")
+	cfg := config.Default()
+	cfg.Node.DataDir = cwd
+	if err := runReset(cfg, "", resetOptions{yes: true}, &bytes.Buffer{}); err == nil {
+		t.Fatal("runReset returned nil for cwd")
 	}
 }

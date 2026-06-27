@@ -9,9 +9,11 @@ import (
 
 	"github.com/kopia/kopia/repo/blob"
 	corehost "github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
 
 	"p2pbk/internal/backend/p2p/locator"
 	"p2pbk/internal/config"
+	p2pdiscovery "p2pbk/internal/network/discovery"
 	p2phost "p2pbk/internal/network/host"
 	"p2pbk/internal/network/wire"
 	"p2pbk/internal/peer/blobserver"
@@ -59,6 +61,15 @@ func TestOpenDistributedStorageWithLocatorUsesConfiguredPeers(t *testing.T) {
 }
 
 func TestShouldUseDistributedStorageWithSavedPeers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	savedPeer, err := p2phost.New(ctx, p2phost.Options{})
+	if err != nil {
+		t.Fatalf("saved peer host New returned error: %v", err)
+	}
+	defer savedPeer.Close()
+
 	cfg := config.Default()
 	cfg.Node.DataDir = filepath.Join(t.TempDir(), "client")
 	cfg.Network.BootstrapPeers = nil
@@ -80,8 +91,8 @@ func TestShouldUseDistributedStorageWithSavedPeers(t *testing.T) {
 		t.Fatalf("Open localdb returned error: %v", err)
 	}
 	if err := db.UpsertPeer(localdb.PeerRecord{
-		ID:     "peer-a",
-		Addrs:  []string{"/ip4/127.0.0.1/tcp/4001/p2p/peer-a"},
+		ID:     savedPeer.ID().String(),
+		Addrs:  []string{firstP2PAddr(savedPeer)},
 		Source: "mdns",
 	}); err != nil {
 		t.Fatalf("UpsertPeer returned error: %v", err)
@@ -96,6 +107,83 @@ func TestShouldUseDistributedStorageWithSavedPeers(t *testing.T) {
 	}
 	if !distributed {
 		t.Fatal("distributed = false after saved peer")
+	}
+}
+
+func TestShouldUseDistributedStorageIgnoresSavedPublicDiscoveryPeer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	infra, err := p2phost.New(ctx, p2phost.Options{})
+	if err != nil {
+		t.Fatalf("infra host New returned error: %v", err)
+	}
+	defer infra.Close()
+
+	cfg := config.Default()
+	cfg.Node.DataDir = filepath.Join(t.TempDir(), "client")
+	cfg.Network.BootstrapPeers = nil
+	cfg.Network.PublicDiscoveryPeers = []string{firstP2PAddr(infra)}
+
+	paths, err := cfg.Paths()
+	if err != nil {
+		t.Fatalf("Paths returned error: %v", err)
+	}
+	db, err := localdb.Open(paths.LocalDB)
+	if err != nil {
+		t.Fatalf("Open localdb returned error: %v", err)
+	}
+	if err := db.UpsertPeer(localdb.PeerRecord{
+		ID:     infra.ID().String(),
+		Addrs:  []string{firstP2PAddr(infra)},
+		Source: "connected",
+	}); err != nil {
+		t.Fatalf("UpsertPeer returned error: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	distributed, err := ShouldUseDistributedStorage(cfg)
+	if err != nil {
+		t.Fatalf("ShouldUseDistributedStorage returned error: %v", err)
+	}
+	if distributed {
+		t.Fatal("distributed = true with only public discovery peer saved")
+	}
+}
+
+func TestConnectedStoragePeersExcludesPublicDiscoveryPeers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	client, err := p2phost.New(ctx, p2phost.Options{})
+	if err != nil {
+		t.Fatalf("client host New returned error: %v", err)
+	}
+	defer client.Close()
+
+	infra, err := p2phost.New(ctx, p2phost.Options{})
+	if err != nil {
+		t.Fatalf("infra host New returned error: %v", err)
+	}
+	defer infra.Close()
+	storage, err := p2phost.New(ctx, p2phost.Options{})
+	if err != nil {
+		t.Fatalf("storage host New returned error: %v", err)
+	}
+	defer storage.Close()
+
+	if err := client.Connect(ctx, p2phost.AddrInfo(infra)); err != nil {
+		t.Fatalf("connect infra: %v", err)
+	}
+	if err := client.Connect(ctx, p2phost.AddrInfo(storage)); err != nil {
+		t.Fatalf("connect storage: %v", err)
+	}
+
+	peers := connectedStoragePeers(client, p2pdiscovery.NewPeerFilter([]peer.AddrInfo{{ID: infra.ID()}}))
+	if len(peers) != 1 || peers[0] != storage.ID() {
+		t.Fatalf("storage peers = %v, want [%s]", peers, storage.ID())
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	libp2p "github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"p2pbk/internal/peer/localdb"
 )
 
@@ -67,6 +68,47 @@ func TestFileRegistryDiscoversAndSavesLocalPeers(t *testing.T) {
 	}
 	if err := s2.Close(); err != nil {
 		t.Fatalf("close service 2: %v", err)
+	}
+}
+
+func TestConnectConfiguredAndSavedSkipsIgnoredPeers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h1, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatalf("create host 1: %v", err)
+	}
+	defer h1.Close()
+	h2, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatalf("create host 2: %v", err)
+	}
+	defer h2.Close()
+
+	db, err := localdb.Open(filepath.Join(t.TempDir(), "node.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	addrs, err := peer.AddrInfoToP2pAddrs(&peer.AddrInfo{ID: h2.ID(), Addrs: h2.Addrs()})
+	if err != nil {
+		t.Fatalf("AddrInfoToP2pAddrs: %v", err)
+	}
+	connected, err := ConnectConfiguredAndSaved(ctx, h1, []string{addrs[0].String()}, db, WithIgnoredPeers(NewPeerFilter([]peer.AddrInfo{{ID: h2.ID()}})))
+	if err != nil {
+		t.Fatalf("ConnectConfiguredAndSaved returned error: %v", err)
+	}
+	if len(connected) != 0 {
+		t.Fatalf("connected ignored peers = %d, want 0", len(connected))
+	}
+	peers, err := db.ListPeers()
+	if err != nil {
+		t.Fatalf("ListPeers returned error: %v", err)
+	}
+	if len(peers) != 0 {
+		t.Fatalf("saved peers = %d, want 0", len(peers))
 	}
 }
 

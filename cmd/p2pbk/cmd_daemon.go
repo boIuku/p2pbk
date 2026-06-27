@@ -13,6 +13,7 @@ import (
 
 	"p2pbk/internal/audit"
 	"p2pbk/internal/config"
+	"p2pbk/internal/logging"
 	p2pdht "p2pbk/internal/network/dht"
 	p2pdiscovery "p2pbk/internal/network/discovery"
 	p2phost "p2pbk/internal/network/host"
@@ -56,6 +57,7 @@ func newDaemonCommand() *cobra.Command {
 }
 
 func runDaemon(ctx context.Context, cfg config.Config, out interface{ Write([]byte) (int, error) }) error {
+	logger := logging.New(out, "daemon")
 	runtime, err := openDaemonRuntime(ctx, cfg)
 	if err != nil {
 		return err
@@ -66,17 +68,17 @@ func runDaemon(ctx context.Context, cfg config.Config, out interface{ Write([]by
 	if err != nil {
 		return err
 	}
-	if err := registerDaemonServices(cfg, runtime, out); err != nil {
+	if err := registerDaemonServices(cfg, runtime, logger.WithComponent("services")); err != nil {
 		return err
 	}
-	discoveryServices, err := startDaemonDiscovery(ctx, cfg, runtime, out)
+	discoveryServices, err := startDaemonDiscovery(ctx, cfg, runtime, logger.WithComponent("discovery"))
 	if err != nil {
 		return err
 	}
 	defer discoveryServices.Close()
 
-	writeDaemonStartup(out, runtime, connected)
-	startDaemonJobs(ctx, cfg, runtime, out)
+	writeDaemonStartup(logger, runtime, connected)
+	startDaemonJobs(ctx, cfg, runtime, logger)
 
 	<-ctx.Done()
 	return nil
@@ -93,11 +95,11 @@ func openDaemonRuntime(ctx context.Context, cfg config.Config) (*daemonRuntime, 
 		return nil, fmt.Errorf("parse public discovery peer: %w", err)
 	}
 	host, err := p2phost.New(ctx, p2phost.Options{
-		ListenAddrs:       cfg.Network.ListenAddrs,
-		StaticRelays:      relayPeers,
-		EnableNATPortMap:  true,
+		ListenAddrs:        cfg.Network.ListenAddrs,
+		StaticRelays:       relayPeers,
+		EnableNATPortMap:   true,
 		EnableHolePunching: len(relayPeers) > 0,
-		ForcePrivateRelay: cfg.Network.ForcePrivateReachabilityForRelay,
+		ForcePrivateRelay:  cfg.Network.ForcePrivateReachabilityForRelay,
 	})
 	if err != nil {
 		return nil, err
@@ -127,9 +129,17 @@ func (r *daemonRuntime) Close() error {
 }
 
 func startDaemonNetworking(ctx context.Context, cfg config.Config, runtime *daemonRuntime) ([]peer.AddrInfo, error) {
-	bootstrapPeers := append([]string(nil), cfg.Network.BootstrapPeers...)
-	bootstrapPeers = append(bootstrapPeers, cfg.Network.PublicDiscoveryPeers...)
-	connected, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, runtime.host, bootstrapPeers, runtime.db)
+	publicDiscoveryInfos, err := p2phost.ParseAddrInfos(cfg.Network.PublicDiscoveryPeers)
+	if err != nil {
+		return nil, fmt.Errorf("parse public discovery peer: %w", err)
+	}
+	infrastructureFilter := p2pdiscovery.NewPeerFilter(publicDiscoveryInfos)
+
+	publicConnected, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, runtime.host, cfg.Network.PublicDiscoveryPeers, nil)
+	if err != nil {
+		return nil, err
+	}
+	connected, err := p2pdiscovery.ConnectConfiguredAndSaved(ctx, runtime.host, cfg.Network.BootstrapPeers, runtime.db, p2pdiscovery.WithIgnoredPeers(infrastructureFilter))
 	if err != nil {
 		return nil, err
 	}
@@ -144,17 +154,17 @@ func startDaemonNetworking(ctx context.Context, cfg config.Config, runtime *daem
 	}
 	runtime.dht = dht
 
-	return connected, nil
+	return append(publicConnected, connected...), nil
 }
 
-func registerDaemonServices(cfg config.Config, runtime *daemonRuntime, out interface{ Write([]byte) (int, error) }) error {
+func registerDaemonServices(cfg config.Config, runtime *daemonRuntime, logger *logging.Logger) error {
 	q, err := quota.New(cfg.Storage.OfferBytes)
 	if err != nil {
 		return err
 	}
 	id, identityErr := loadDaemonIdentity(runtime.paths.Identity, cfg)
 	if identityErr != nil {
-		fmt.Fprintf(out, "identity unavailable for signed receipts: %v\n", identityErr)
+		logger.Warn("identity_unavailable", "identity unavailable for signed receipts", "identity_unavailable", identityErr, nil)
 	}
 	blobServer, err := blobserver.NewWithOptions(runtime.paths.StoreDir, blobserver.Options{
 		Quota:    q,
@@ -170,15 +180,31 @@ func registerDaemonServices(cfg config.Config, runtime *daemonRuntime, out inter
 	reputationWindow, _ := time.ParseDuration(cfg.Trust.ReputationWindow)
 	responder.New(blobServer, runtime.db, reputation.New(reputationWindow), responder.WithPeerID(runtime.host.ID())).Register(router)
 	router.Register(runtime.host)
+	logger.Info("services_registered", "daemon services registered", logging.Field{
+		"store_dir":          filepath.Clean(runtime.paths.StoreDir),
+		"offer_bytes":        cfg.Storage.OfferBytes,
+		"signed_receipts":    id != nil,
+		"reputation_window":  cfg.Trust.ReputationWindow,
+		"wire_protocol_id":   string(wire.ProtocolID),
+		"local_peer_id":      runtime.host.ID().String(),
+		"challenge_interval": cfg.Trust.ChallengeInterval,
+	})
 	return nil
 }
 
-func startDaemonDiscovery(ctx context.Context, cfg config.Config, runtime *daemonRuntime, out interface{ Write([]byte) (int, error) }) (*daemonDiscoveryServices, error) {
+func startDaemonDiscovery(ctx context.Context, cfg config.Config, runtime *daemonRuntime, logger *logging.Logger) (*daemonDiscoveryServices, error) {
 	services := &daemonDiscoveryServices{}
-	if err := p2pdiscovery.SaveConnectedPeers(runtime.db, runtime.host, "daemon"); err != nil {
+	publicDiscoveryInfos, err := p2phost.ParseAddrInfos(cfg.Network.PublicDiscoveryPeers)
+	if err != nil {
+		return nil, fmt.Errorf("parse public discovery peer: %w", err)
+	}
+	infrastructureFilter := p2pdiscovery.NewPeerFilter(publicDiscoveryInfos)
+
+	if err := p2pdiscovery.SaveConnectedPeers(runtime.db, runtime.host, "daemon", p2pdiscovery.WithIgnoredPeers(infrastructureFilter)); err != nil {
 		return nil, err
 	}
-	if cfg.Network.EnableRemoteDiscovery {
+	switch cfg.Network.Discovery {
+	case "remote":
 		if runtime.dht == nil {
 			return nil, errors.New("remote discovery requires dht")
 		}
@@ -188,27 +214,33 @@ func startDaemonDiscovery(ctx context.Context, cfg config.Config, runtime *daemo
 		}
 		remoteDiscovery, err := p2pdiscovery.StartRemote(ctx, runtime.host, runtime.db, runtime.dht, cfg.Network.RemoteDiscoveryNamespace,
 			p2pdiscovery.WithRemoteInterval(interval),
+			p2pdiscovery.WithRemoteIgnoredPeers(infrastructureFilter),
+			p2pdiscovery.WithRemoteRequireRelayAddress(cfg.Network.ForcePrivateReachabilityForRelay),
 			p2pdiscovery.WithRemoteObserver(func(event p2pdiscovery.Event) {
-				writeDiscoveryEvent(out, event)
+				writeDiscoveryEvent(logger, event)
 			}),
 		)
 		if err != nil {
-			fmt.Fprintf(out, "remote discovery unavailable: %v\n", err)
+			logger.Error("remote_discovery_unavailable", "remote discovery unavailable", "remote_discovery_unavailable", err, logging.Field{"namespace": cfg.Network.RemoteDiscoveryNamespace})
 		} else {
 			services.remote = remoteDiscovery
-			fmt.Fprintf(out, "remote discovery: %s every %s\n", cfg.Network.RemoteDiscoveryNamespace, interval)
+			logger.Info("remote_discovery_started", "remote discovery started", logging.Field{
+				"namespace":   cfg.Network.RemoteDiscoveryNamespace,
+				"interval_ms": interval.Milliseconds(),
+			})
 		}
-	}
-	if cfg.Network.EnableLocalDiscovery {
+	case "local":
 		localDiscovery, err := p2pdiscovery.StartLocalWithOptions(ctx, runtime.host, runtime.db, cfg.Network.LocalDiscoveryService, p2pdiscovery.WithObserver(func(event p2pdiscovery.Event) {
-			writeDiscoveryEvent(out, event)
+			writeDiscoveryEvent(logger, event)
 		}))
 		if err != nil {
-			fmt.Fprintf(out, "local discovery unavailable: %v\n", err)
+			logger.Error("local_discovery_unavailable", "local discovery unavailable", "local_discovery_unavailable", err, logging.Field{"service": cfg.Network.LocalDiscoveryService})
 		} else {
 			services.local = localDiscovery
-			fmt.Fprintf(out, "local discovery: %s\n", cfg.Network.LocalDiscoveryService)
+			logger.Info("local_discovery_started", "local discovery started", logging.Field{"service": cfg.Network.LocalDiscoveryService})
 		}
+	case "disabled":
+		logger.Info("discovery_disabled", "peer discovery disabled", nil)
 	}
 	return services, nil
 }
@@ -220,47 +252,66 @@ func (s *daemonDiscoveryServices) Close() error {
 	return errors.Join(s.local.Close(), s.remote.Close())
 }
 
-func writeDiscoveryEvent(out interface{ Write([]byte) (int, error) }, event p2pdiscovery.Event) {
+func writeDiscoveryEvent(logger *logging.Logger, event p2pdiscovery.Event) {
 	source := event.Source
 	if source == "" {
 		source = "unknown"
 	}
+	fields := logging.Field{"source": source, "addrs": event.Addrs}
 	switch event.Type {
 	case p2pdiscovery.EventFound:
-		fmt.Fprintf(out, "discovery found (%s): %s\n", source, event.PeerID)
+		logger.Write(logging.Event{Level: "info", Event: "peer_discovered", Message: "discovery found peer", PeerID: event.PeerID, Fields: fields})
 	case p2pdiscovery.EventConnected:
-		fmt.Fprintf(out, "discovery connected (%s): %s\n", source, event.PeerID)
+		logger.Write(logging.Event{Level: "info", Event: "peer_connected", Message: "discovery connected peer", PeerID: event.PeerID, Fields: fields})
 	case p2pdiscovery.EventSaved:
-		fmt.Fprintf(out, "discovery saved (%s): %s\n", source, event.PeerID)
+		logger.Write(logging.Event{Level: "info", Event: "peer_saved", Message: "discovery saved peer", PeerID: event.PeerID, Fields: fields})
 	case p2pdiscovery.EventConnectFailed:
-		fmt.Fprintf(out, "discovery connect failed (%s): %s: %v\n", source, event.PeerID, event.Err)
+		logger.Write(logging.Event{Level: "warn", Event: "peer_connect_failed", Message: "discovery connect failed", PeerID: event.PeerID, ErrorCode: "peer_connect_failed", Error: errorString(event.Err), Fields: fields})
 	case p2pdiscovery.EventSaveFailed:
-		fmt.Fprintf(out, "discovery save failed (%s): %s: %v\n", source, event.PeerID, event.Err)
+		logger.Write(logging.Event{Level: "warn", Event: "peer_save_failed", Message: "discovery save failed", PeerID: event.PeerID, ErrorCode: "peer_save_failed", Error: errorString(event.Err), Fields: fields})
 	}
 }
 
-func writeDaemonStartup(out interface{ Write([]byte) (int, error) }, runtime *daemonRuntime, connected []peer.AddrInfo) {
-	fmt.Fprintf(out, "p2pbk peer: %s\n", runtime.host.ID())
+func writeDaemonStartup(logger *logging.Logger, runtime *daemonRuntime, connected []peer.AddrInfo) {
+	addrs := make([]string, 0, len(runtime.host.Addrs()))
 	for _, addr := range runtime.host.Addrs() {
-		fmt.Fprintf(out, "listening: %s/p2p/%s\n", addr, runtime.host.ID())
+		addrs = append(addrs, fmt.Sprintf("%s/p2p/%s", addr, runtime.host.ID()))
 	}
-	for _, peer := range connected {
-		fmt.Fprintf(out, "connected peer: %s\n", peer.ID)
+	connectedPeers := make([]string, 0, len(connected))
+	for _, p := range connected {
+		connectedPeers = append(connectedPeers, p.ID.String())
 	}
-	fmt.Fprintf(out, "store: %s\n", filepath.Clean(runtime.paths.StoreDir))
+	logger.Write(logging.Event{
+		Level:   "info",
+		Event:   "daemon_started",
+		PeerID:  runtime.host.ID().String(),
+		Message: "p2pbk daemon started",
+		Fields: logging.Field{
+			"listen_addrs":    addrs,
+			"connected_peers": connectedPeers,
+			"store_dir":       filepath.Clean(runtime.paths.StoreDir),
+		},
+	})
 }
 
-func startDaemonJobs(ctx context.Context, cfg config.Config, runtime *daemonRuntime, out interface{ Write([]byte) (int, error) }) {
+func startDaemonJobs(ctx context.Context, cfg config.Config, runtime *daemonRuntime, logger *logging.Logger) {
 	scheduler.Start(ctx, scheduler.Options{
 		Config:     cfg,
 		ConfigPath: currentConfigPath(cfg),
 		DB:         runtime.db,
-		Output:     out,
+		Logger:     logger.WithComponent("scheduler"),
 	})
 	if interval, err := time.ParseDuration(cfg.Trust.ChallengeInterval); err == nil && interval > 0 {
-		audit.Start(ctx, audit.Options{Config: cfg, Host: runtime.host, DB: runtime.db, Output: out}, interval)
-		fmt.Fprintf(out, "audits: every %s\n", interval)
+		audit.Start(ctx, audit.Options{Config: cfg, Host: runtime.host, DB: runtime.db, Logger: logger.WithComponent("audit")}, interval)
+		logger.Info("audit_scheduler_started", "audit scheduler started", logging.Field{"interval_ms": interval.Milliseconds()})
 	}
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func loadDaemonIdentity(path string, cfg config.Config) (*identity.Identity, error) {

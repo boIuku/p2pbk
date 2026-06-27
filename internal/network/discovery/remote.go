@@ -3,11 +3,13 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
 	corehost "github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 )
 
 const defaultRemoteDiscoveryLimit = 50
@@ -23,9 +25,11 @@ type RemoteService struct {
 }
 
 type remoteOptions struct {
-	observer func(Event)
-	interval time.Duration
-	limit    int
+	observer     func(Event)
+	interval     time.Duration
+	limit        int
+	filter       PeerFilter
+	requireRelay bool
 }
 
 type RemoteOption func(*remoteOptions)
@@ -45,6 +49,18 @@ func WithRemoteInterval(interval time.Duration) RemoteOption {
 func WithRemoteLimit(limit int) RemoteOption {
 	return func(opts *remoteOptions) {
 		opts.limit = limit
+	}
+}
+
+func WithRemoteIgnoredPeers(filter PeerFilter) RemoteOption {
+	return func(opts *remoteOptions) {
+		opts.filter = filter
+	}
+}
+
+func WithRemoteRequireRelayAddress(require bool) RemoteOption {
+	return func(opts *remoteOptions) {
+		opts.requireRelay = require
 	}
 }
 
@@ -82,13 +98,13 @@ func StartRemote(ctx context.Context, h corehost.Host, store PeerStore, router R
 		defer service.wg.Done()
 		ticker := time.NewTicker(options.interval)
 		defer ticker.Stop()
-		runRemoteDiscoveryRound(remoteCtx, router, namespace, options.interval, options.limit, notifee)
+		runRemoteDiscoveryRound(remoteCtx, h, router, namespace, options.interval, options.limit, notifee, options.filter, options.requireRelay)
 		for {
 			select {
 			case <-remoteCtx.Done():
 				return
 			case <-ticker.C:
-				runRemoteDiscoveryRound(remoteCtx, router, namespace, options.interval, options.limit, notifee)
+				runRemoteDiscoveryRound(remoteCtx, h, router, namespace, options.interval, options.limit, notifee, options.filter, options.requireRelay)
 			}
 		}
 	}()
@@ -110,11 +126,13 @@ func (s *RemoteService) Close() error {
 	return nil
 }
 
-func runRemoteDiscoveryRound(ctx context.Context, router RemoteRouter, namespace string, interval time.Duration, limit int, notifee *localNotifee) {
+func runRemoteDiscoveryRound(ctx context.Context, h corehost.Host, router RemoteRouter, namespace string, interval time.Duration, limit int, notifee *localNotifee, filter PeerFilter, requireRelay bool) {
 	if ctx.Err() != nil {
 		return
 	}
-	_, _ = router.Advertise(ctx, namespace, interval*2)
+	if readyForRemoteAdvertise(h.Addrs(), requireRelay) {
+		_, _ = router.Advertise(ctx, namespace, interval*2)
+	}
 	peers, err := router.FindPeers(ctx, namespace, limit)
 	if err != nil {
 		notifee.emit(Event{Type: EventConnectFailed, Source: "remote-discovery", Err: err})
@@ -124,6 +142,65 @@ func runRemoteDiscoveryRound(ctx context.Context, router RemoteRouter, namespace
 		if ctx.Err() != nil {
 			return
 		}
+		if info.ID == h.ID() || filter.Ignored(info.ID) || !hasUsefulRemoteAddr(info.Addrs, requireRelay) {
+			continue
+		}
 		notifee.handlePeerFound(info, "remote-discovery")
 	}
+}
+
+func readyForRemoteAdvertise(addrs []multiaddr.Multiaddr, requireRelay bool) bool {
+	return hasUsefulRemoteAddr(addrs, requireRelay)
+}
+
+func hasUsefulRemoteAddr(addrs []multiaddr.Multiaddr, requireRelay bool) bool {
+	for _, addr := range addrs {
+		if isRelayAddr(addr) {
+			return true
+		}
+	}
+	if requireRelay {
+		return false
+	}
+	for _, addr := range addrs {
+		if isPublicAddr(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRelayAddr(addr multiaddr.Multiaddr) bool {
+	_, err := addr.ValueForProtocol(multiaddr.P_CIRCUIT)
+	return err == nil
+}
+
+func isPublicAddr(addr multiaddr.Multiaddr) bool {
+	if hasDNSAddr(addr) {
+		return true
+	}
+	if value, err := addr.ValueForProtocol(multiaddr.P_IP4); err == nil {
+		return isPublicIP(value)
+	}
+	if value, err := addr.ValueForProtocol(multiaddr.P_IP6); err == nil {
+		return isPublicIP(value)
+	}
+	return false
+}
+
+func hasDNSAddr(addr multiaddr.Multiaddr) bool {
+	for _, protocol := range []int{multiaddr.P_DNS, multiaddr.P_DNS4, multiaddr.P_DNS6, multiaddr.P_DNSADDR} {
+		if _, err := addr.ValueForProtocol(protocol); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func isPublicIP(value string) bool {
+	ip := net.ParseIP(value)
+	if ip == nil {
+		return false
+	}
+	return !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !ip.IsUnspecified()
 }
