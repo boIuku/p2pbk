@@ -8,8 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/progress"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -18,7 +23,8 @@ import (
 )
 
 const (
-	tabDashboard = iota
+	tabHome = iota
+	tabDashboard
 	tabFolders
 	tabBackups
 	tabSettings
@@ -35,7 +41,28 @@ const (
 	settingsAdvanced
 )
 
-var tabs = []string{"Dashboard", "Folders", "Backups", "Settings"}
+const (
+	homeFocusRoots = iota
+	homeFocusBackups
+	homeFocusSystem
+)
+
+const (
+	homePaneRoots = iota
+	homePaneDetails
+	homePaneBackups
+	homePaneActivity
+)
+
+const (
+	homeDetailOverview = iota
+	homeDetailRoot
+	homeDetailBackup
+	homeDetailSystem
+	homeDetailHelp
+)
+
+var tabs = []string{"Home", "Dashboard", "Folders", "Backups", "Settings"}
 
 var settingsSections = []string{"Config", "Service", "Advanced"}
 
@@ -52,6 +79,8 @@ type model struct {
 
 	tab          int
 	settingsTab  int
+	homeFocus    int
+	homeMode     int
 	width        int
 	height       int
 	selected     int
@@ -68,6 +97,12 @@ type model struct {
 	picker       *dirPickerState
 	pending      *pendingAction
 	progress     progress.Model
+	spinner      spinner.Model
+	homeRoots    list.Model
+	homeBackups  list.Model
+	homeDetail   viewport.Model
+	homeActivity viewport.Model
+	homeHelp     help.Model
 }
 
 type operationState struct {
@@ -114,33 +149,177 @@ type opMsg app.OperationEvent
 
 type clearMessageMsg struct{}
 
+type homeKeyMap struct {
+	Up       key.Binding
+	Down     key.Binding
+	NextPane key.Binding
+	PrevPane key.Binding
+	Details  key.Binding
+	Back     key.Binding
+	Backup   key.Binding
+	Restore  key.Binding
+	Add      key.Binding
+	Remove   key.Binding
+	Password key.Binding
+	Audit    key.Binding
+	Edit     key.Binding
+	Init     key.Binding
+	Reset    key.Binding
+	Start    key.Binding
+	Stop     key.Binding
+	Help     key.Binding
+	PrevTab  key.Binding
+	NextTab  key.Binding
+	Quit     key.Binding
+	Cancel   key.Binding
+}
+
+func (k homeKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Up, k.Down, k.NextPane, k.Details, k.Help, k.Quit}
+}
+
+func (k homeKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Up, k.Down, k.NextPane, k.PrevPane, k.Details, k.Back},
+		{k.Backup, k.Restore, k.Add, k.Remove, k.Audit},
+		{kPasswordBinding(k), k.Edit, k.Init, k.Start, k.Stop, k.Reset},
+		{k.PrevTab, k.NextTab, k.Help, k.Quit},
+	}
+}
+
+func kPasswordBinding(k homeKeyMap) key.Binding {
+	return k.Password
+}
+
+var homeKeys = homeKeyMap{
+	Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("up/k", "select")),
+	Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("down/j", "select")),
+	NextPane: key.NewBinding(key.WithKeys("tab", "right", "l"), key.WithHelp("tab", "next pane")),
+	PrevPane: key.NewBinding(key.WithKeys("shift+tab", "left", "h"), key.WithHelp("shift+tab", "prev pane")),
+	Details:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "details")),
+	Back:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+	Backup:   key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "backup")),
+	Restore:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "restore")),
+	Add:      key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add")),
+	Remove:   key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "remove")),
+	Password: key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "password")),
+	Audit:    key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "audit")),
+	Edit:     key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
+	Init:     key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "init")),
+	Reset:    key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "reset")),
+	Start:    key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "start")),
+	Stop:     key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "stop")),
+	Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+	PrevTab:  key.NewBinding(key.WithKeys("[", "shift+["), key.WithHelp("[", "prev tab")),
+	NextTab:  key.NewBinding(key.WithKeys("]"), key.WithHelp("]", "next tab")),
+	Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+	Cancel:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "cancel")),
+}
+
+type homeListItem struct {
+	title string
+	desc  string
+}
+
+func (i homeListItem) FilterValue() string { return i.title + " " + i.desc }
+func (i homeListItem) Title() string       { return i.title }
+func (i homeListItem) Description() string { return i.desc }
+
+type homeHelpBindings struct {
+	short []key.Binding
+	full  [][]key.Binding
+}
+
+func (b homeHelpBindings) ShortHelp() []key.Binding {
+	return b.short
+}
+
+func (b homeHelpBindings) FullHelp() [][]key.Binding {
+	return b.full
+}
+
 var (
-	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("63")).Padding(0, 1)
-	panelStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
-	cardStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
-	cardTitle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86"))
-	cardRule     = lipgloss.NewStyle().Foreground(lipgloss.Color("63"))
+	cyberBg     = lipgloss.Color("#0B0F14")
+	cyberPanel  = lipgloss.Color("#3A4756")
+	cyberText   = lipgloss.Color("#E6EDF3")
+	cyberMuted  = lipgloss.Color("#9AA7B7")
+	cyberFocus  = lipgloss.Color("#33D6C5")
+	cyberFocus2 = lipgloss.Color("#7CF7EA")
+	cyberBlue   = lipgloss.Color("#4AA3FF")
+	cyberGreen  = lipgloss.Color("#4ADE80")
+	cyberAmber  = lipgloss.Color("#FBBF24")
+	cyberRed    = lipgloss.Color("#F87171")
+	cyberViolet = lipgloss.Color("#A78BFA")
+	cyberRow    = lipgloss.Color("#183041")
+
+	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(cyberBg).Background(cyberFocus).Padding(0, 1)
+	panelStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cyberPanel).Padding(0, 1)
+	cardStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cyberPanel).Padding(0, 1)
+	cardTitle    = lipgloss.NewStyle().Bold(true).Foreground(cyberFocus)
+	cardRule     = lipgloss.NewStyle().Foreground(cyberViolet)
 	badgeStyle   = lipgloss.NewStyle().Bold(true).Padding(0, 1)
-	activeStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86"))
-	mutedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	warnStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	errorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	successStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	activeStyle  = lipgloss.NewStyle().Bold(true).Foreground(cyberFocus)
+	mutedStyle   = lipgloss.NewStyle().Foreground(cyberMuted)
+	warnStyle    = lipgloss.NewStyle().Foreground(cyberAmber)
+	errorStyle   = lipgloss.NewStyle().Foreground(cyberRed)
+	successStyle = lipgloss.NewStyle().Foreground(cyberGreen)
+
+	homeBorderStyle        = lipgloss.NewStyle().Foreground(cyberPanel)
+	homeTitleStyle         = lipgloss.NewStyle().Bold(true).Foreground(cyberFocus)
+	homeFocusRoot          = lipgloss.NewStyle().Bold(true).Foreground(cyberBg).Background(cyberFocus2)
+	homeFocusBackup        = lipgloss.NewStyle().Bold(true).Foreground(cyberBg).Background(cyberFocus2)
+	homeFocusActivityTitle = lipgloss.NewStyle().Bold(true).Foreground(cyberBg).Background(cyberFocus2)
+	homeMutedStyle         = lipgloss.NewStyle().Foreground(cyberMuted)
+	homeKeyStyle           = lipgloss.NewStyle().Bold(true).Foreground(cyberBg).Background(cyberFocus2).Padding(0, 1)
+	homeSelectedRow        = lipgloss.NewStyle().Bold(true).Foreground(cyberFocus2).Background(cyberRow)
+	homeOpStyle            = lipgloss.NewStyle().Bold(true).Foreground(cyberBlue)
 )
 
 func Run(cfg config.Config, configPath, password string) error {
-	tab := tabDashboard
+	tab := tabHome
 	if configPath == "" {
 		tab = tabSettings
 	}
-	bar := progress.New(progress.WithDefaultGradient())
-	m := model{cfg: cfg, configPath: configPath, password: password, tab: tab, loading: true, progress: bar}
+	bar := progress.New(progress.WithGradient("#7CF7EA", "#58B7FF"))
+	spin := spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(lipgloss.NewStyle().Foreground(cyberFocus2)))
+	m := model{cfg: cfg, configPath: configPath, password: password, tab: tab, loading: true, progress: bar, spinner: spin}
+	m.initHomeComponents()
 	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	return err
 }
 
+func (m *model) initHomeComponents() {
+	m.homeRoots = newHomeList()
+	m.homeBackups = newHomeList()
+	m.homeDetail = viewport.New(0, 0)
+	m.homeActivity = viewport.New(0, 0)
+	m.homeHelp = help.New()
+	m.homeHelp.ShowAll = false
+}
+
+func newHomeList() list.Model {
+	delegate := list.NewDefaultDelegate()
+	delegate.ShowDescription = false
+	delegate.SetSpacing(0)
+	delegate.Styles.NormalTitle = lipgloss.NewStyle().Foreground(cyberMuted).PaddingLeft(2)
+	delegate.Styles.SelectedTitle = lipgloss.NewStyle().
+		Border(lipgloss.ThickBorder(), false, false, false, true).
+		BorderForeground(cyberFocus2).
+		Foreground(cyberFocus2).
+		Background(cyberRow).
+		Bold(true).
+		Padding(0, 1)
+	l := list.New(nil, delegate, 0, 0)
+	l.SetShowTitle(false)
+	l.SetShowStatusBar(false)
+	l.SetShowPagination(false)
+	l.SetShowHelp(false)
+	l.SetFilteringEnabled(false)
+	return l
+}
+
 func (m model) Init() tea.Cmd {
-	return tea.Batch(fetchStatus(m.cfg, m.configPath, m.password), tick())
+	return tea.Batch(fetchStatus(m.cfg, m.configPath, m.password), tick(), m.spinner.Tick)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -150,6 +329,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.picker != nil {
 			m.picker.resize(size.Width, size.Height)
 		}
+		m.syncHomeComponents()
 		return m, nil
 	}
 	if m.picker != nil {
@@ -159,7 +339,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateForm(msg)
 	}
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		if m.loading {
+			return m, cmd
+		}
+		return m, nil
 	case tea.KeyMsg:
+		if m.tab == tabHome {
+			if next, cmd, handled := m.updateHomeKey(msg); handled {
+				return next, cmd
+			}
+		}
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
 			if m.op != nil {
@@ -203,13 +395,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selected = 0
 			}
 		case "up", "k":
-			if m.tab == tabFolders {
+			if m.tab == tabHome {
+				m.moveRootSelection(-1)
+			} else if m.tab == tabFolders {
 				m.moveFolderSelection(-1)
 			} else if m.selected > 0 {
 				m.selected--
 			}
 		case "down", "j":
-			if m.tab == tabFolders {
+			if m.tab == tabHome {
+				m.moveRootSelection(1)
+			} else if m.tab == tabFolders {
 				m.moveFolderSelection(1)
 			} else if m.selected < m.maxSelected() {
 				m.selected++
@@ -231,13 +427,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.form = restoreForm(m.status.Snapshots[m.selected].ID)
 				return m, nil
 			}
+			if m.tab == tabHome && m.op == nil {
+				if snapshot := m.selectedRootLatestBackup(); snapshot.ID != "" {
+					m.form = restoreForm(snapshot.ID)
+					return m, nil
+				}
+			}
 			if m.tab == tabDashboard && m.op == nil && len(m.status.Snapshots) > 0 {
 				m.form = restoreForm(m.latestBackup().ID)
 				return m, nil
 			}
 			return m, fetchStatus(m.cfg, m.configPath, m.password)
 		case "b":
-			if (m.tab == tabDashboard || m.tab == tabFolders) && m.op == nil && len(m.status.Roots) > 0 {
+			if (m.tab == tabHome || m.tab == tabDashboard || m.tab == tabFolders) && m.op == nil && len(m.status.Roots) > 0 {
 				root := m.status.Roots[m.folderIndex].Path
 				if m.password == "" {
 					m.pending = &pendingAction{kind: "backup", root: root}
@@ -271,11 +473,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.form = removeFolderForm(m.status.Roots[m.folderIndex].Path)
 			}
 		case "s":
-			if (m.tab == tabDashboard || (m.tab == tabSettings && m.settingsTab == settingsService)) && m.op == nil {
+			if (m.tab == tabHome || m.tab == tabDashboard || (m.tab == tabSettings && m.settingsTab == settingsService)) && m.op == nil {
 				return m, startServiceCmd(m.configPath, m.password)
 			}
 		case "S":
-			if (m.tab == tabDashboard || (m.tab == tabSettings && m.settingsTab == settingsService)) && m.op == nil {
+			if (m.tab == tabHome || m.tab == tabDashboard || (m.tab == tabSettings && m.settingsTab == settingsService)) && m.op == nil {
 				return m, stopServiceCmd(m.configPath)
 			}
 		}
@@ -290,6 +492,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selected = min(m.selected, m.maxSelected())
 		m.folderIndex = min(m.folderIndex, max(0, len(m.status.Roots)-1))
 		m.folderBackup = min(m.folderBackup, max(0, len(m.folderBackups())-1))
+		m.syncHomeComponents()
 	case actionMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -361,7 +564,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 	if m.loading {
-		return "\n  " + mutedStyle.Render("loading p2pbk...") + "\n"
+		return "\n  " + m.spinner.View() + " " + mutedStyle.Render("syncing p2pbk control plane...") + "\n"
 	}
 	if m.picker != nil {
 		return m.dirPickerView()
@@ -373,6 +576,8 @@ func (m model) View() string {
 	body.WriteString(titleStyle.Render("p2pbk") + " " + mutedStyle.Render("backup cockpit") + "\n")
 	body.WriteString(m.tabsView() + "\n\n")
 	switch m.tab {
+	case tabHome:
+		body.WriteString(m.homeView())
 	case tabFolders:
 		body.WriteString(m.foldersView())
 	case tabBackups:
@@ -382,7 +587,7 @@ func (m model) View() string {
 	default:
 		body.WriteString(m.dashboardView())
 	}
-	if m.op != nil && m.tab != tabDashboard {
+	if m.op != nil && m.tab != tabHome && m.tab != tabDashboard {
 		body.WriteString("\n\n" + m.operationView())
 	}
 	body.WriteString("\n\n")
@@ -393,7 +598,9 @@ func (m model) View() string {
 	} else if m.message != "" {
 		body.WriteString(successStyle.Render(m.message) + "\n")
 	}
-	body.WriteString(m.helpView())
+	if m.tab != tabHome {
+		body.WriteString(m.helpView())
+	}
 	return body.String()
 }
 
@@ -407,6 +614,861 @@ func (m model) tabsView() string {
 		}
 	}
 	return strings.Join(parts, "  ")
+}
+
+func (m model) updateHomeKey(msg tea.KeyMsg) (model, tea.Cmd, bool) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		if m.op != nil {
+			m.op.cancel()
+		}
+		return m, tea.Quit, true
+	case "esc":
+		if m.homeMode != homeDetailOverview {
+			m.homeMode = homeDetailOverview
+			return m, nil, true
+		}
+		return m, nil, false
+	}
+	if m.homeMode != homeDetailOverview {
+		if key.Matches(msg, homeKeys.Up) || key.Matches(msg, homeKeys.Down) {
+			var cmd tea.Cmd
+			m.homeDetail, cmd = m.homeDetail.Update(msg)
+			return m, cmd, true
+		}
+	}
+	switch msg.String() {
+	case "[", "shift+[":
+		m.tab = (m.tab + len(tabs) - 1) % len(tabs)
+		m.selected = 0
+		m.homeMode = homeDetailOverview
+		return m, nil, true
+	case "]":
+		m.tab = (m.tab + 1) % len(tabs)
+		m.selected = 0
+		m.homeMode = homeDetailOverview
+		return m, nil, true
+	case "tab", "right", "l":
+		if m.homeMode == homeDetailOverview {
+			m.moveHomeFocus(1)
+		}
+		return m, nil, true
+	case "shift+tab", "left", "h":
+		if m.homeMode == homeDetailOverview {
+			m.moveHomeFocus(-1)
+		}
+		return m, nil, true
+	case "up", "k":
+		if m.homeMode == homeDetailOverview {
+			return m.updateHomeFocusedComponent(msg)
+		}
+		return m, nil, true
+	case "down", "j":
+		if m.homeMode == homeDetailOverview {
+			return m.updateHomeFocusedComponent(msg)
+		}
+		return m, nil, true
+	case "enter":
+		m.openHomeDetail()
+		return m, nil, true
+	case "?":
+		m.homeMode = homeDetailHelp
+		return m, nil, true
+	case "c":
+		if m.op != nil {
+			m.op.cancel()
+			m.addActivity("operation cancellation requested")
+		}
+		return m, nil, true
+	case "r":
+		if m.op == nil {
+			if snapshot := m.selectedHomeSnapshot(); snapshot.ID != "" {
+				m.form = restoreForm(snapshot.ID)
+				return m, nil, true
+			}
+		}
+		return m, fetchStatus(m.cfg, m.configPath, m.password), true
+	case "b":
+		if m.op == nil && len(m.status.Roots) > 0 {
+			root := m.status.Roots[m.folderIndex].Path
+			if m.password == "" {
+				m.pending = &pendingAction{kind: "backup", root: root}
+				m.form = passwordForm()
+				return m, nil, true
+			}
+			return m, m.startBackup(root), true
+		}
+		return m, nil, true
+	case "p":
+		m.form = passwordForm()
+		return m, nil, true
+	case "a":
+		m.openAddFolder()
+		return m, nil, true
+	case "d":
+		if len(m.status.Roots) > 0 {
+			m.form = removeFolderForm(m.status.Roots[m.folderIndex].Path)
+		}
+		return m, nil, true
+	case "e":
+		m.form = editConfigForm(m.cfg)
+		return m, nil, true
+	case "i":
+		if m.configPath == "" || m.status.Repository == "not initialized" {
+			m.form = initForm(m.configPath)
+		}
+		return m, nil, true
+	case "u":
+		if m.op == nil {
+			return m, auditCmd(m.cfg), true
+		}
+		return m, nil, true
+	case "x":
+		if m.homeMode == homeDetailSystem {
+			m.form = resetForm()
+		}
+		return m, nil, true
+	case "s":
+		if m.op == nil {
+			return m, startServiceCmd(m.configPath, m.password), true
+		}
+		return m, nil, true
+	case "S":
+		if m.op == nil {
+			return m, stopServiceCmd(m.configPath), true
+		}
+		return m, nil, true
+	}
+	return m, nil, false
+}
+
+func (m *model) moveHomeFocus(delta int) {
+	next := m.homeFocus + delta
+	if next < homeFocusRoots {
+		next = homeFocusSystem
+	}
+	if next > homeFocusSystem {
+		next = homeFocusRoots
+	}
+	m.homeFocus = next
+}
+
+func (m model) updateHomeFocusedComponent(msg tea.Msg) (model, tea.Cmd, bool) {
+	switch m.homeFocus {
+	case homeFocusBackups:
+		next, cmd := m.homeBackups.Update(msg)
+		m.homeBackups = next
+		m.folderBackup = min(m.homeBackups.Index(), max(0, len(m.folderBackups())-1))
+		m.homeDetail.SetContent(strings.Join(m.homeOverviewDetailRows(m.homeDetail.Width), "\n"))
+		return m, cmd, true
+	case homeFocusSystem:
+		next, cmd := m.homeActivity.Update(msg)
+		m.homeActivity = next
+		return m, cmd, true
+	default:
+		previous := m.folderIndex
+		next, cmd := m.homeRoots.Update(msg)
+		m.homeRoots = next
+		m.folderIndex = min(m.homeRoots.Index(), max(0, len(m.status.Roots)-1))
+		if m.folderIndex != previous {
+			m.folderBackup = 0
+			m.syncHomeComponents()
+		} else {
+			m.homeDetail.SetContent(strings.Join(m.homeOverviewDetailRows(m.homeDetail.Width), "\n"))
+		}
+		return m, cmd, true
+	}
+}
+
+func (m *model) openHomeDetail() {
+	switch m.homeFocus {
+	case homeFocusBackups:
+		if m.selectedHomeSnapshot().ID != "" {
+			m.homeMode = homeDetailBackup
+		}
+	case homeFocusSystem:
+		m.homeMode = homeDetailSystem
+	default:
+		if len(m.status.Roots) > 0 {
+			m.homeMode = homeDetailRoot
+		}
+	}
+}
+
+func (m *model) syncHomeComponents() {
+	width := m.contentWidth()
+	if width < 72 {
+		width = 72
+	}
+	leftWidth, rightWidth, topHeight, bottomHeight := m.homeLayout(width)
+	if width < 92 {
+		innerWidth := width - 2
+		leftWidth = innerWidth
+		rightWidth = innerWidth
+		topHeight = 6
+		bottomHeight = 6
+	}
+	m.homeRoots.SetSize(max(1, leftWidth-2), max(1, topHeight-1))
+	m.homeBackups.SetSize(max(1, leftWidth-2), max(1, bottomHeight-1))
+	m.homeDetail.Width = max(1, rightWidth-2)
+	m.homeDetail.Height = max(1, topHeight-1)
+	m.homeActivity.Width = max(1, rightWidth-2)
+	m.homeActivity.Height = max(1, bottomHeight-1)
+	m.homeHelp.Width = width
+
+	_ = m.homeRoots.SetItems(m.homeRootItems())
+	_ = m.homeBackups.SetItems(m.homeBackupItems())
+	m.homeRoots.Select(min(m.folderIndex, max(0, len(m.status.Roots)-1)))
+	m.homeBackups.Select(min(m.folderBackup, max(0, len(m.folderBackups())-1)))
+	m.homeDetail.SetContent(strings.Join(m.homeOverviewDetailRows(m.homeDetail.Width), "\n"))
+	m.homeActivity.SetContent(strings.Join(m.homeActivityRows(m.homeActivity.Width), "\n"))
+}
+
+func (m model) homeLayout(width int) (leftWidth, rightWidth, topHeight, bottomHeight int) {
+	frameHeight := m.homeFrameHeight()
+	bodyHeight := frameHeight - 2
+	innerWidth := width - 2
+	leftWidth = max(28, min(38, innerWidth/3))
+	rightWidth = innerWidth - leftWidth - 1
+	topHeight = max(6, (bodyHeight-1)/2)
+	bottomHeight = bodyHeight - topHeight - 1
+	return leftWidth, rightWidth, topHeight, bottomHeight
+}
+
+func (m model) homeRootItems() []list.Item {
+	items := make([]list.Item, 0, len(m.status.Roots))
+	for _, root := range m.status.Roots {
+		items = append(items, homeListItem{title: fmt.Sprintf("%s  %s", homeShortPath(root.Path), root.Protection)})
+	}
+	if len(items) == 0 {
+		items = append(items, homeListItem{title: "No protected folders yet"})
+	}
+	return items
+}
+
+func (m model) homeBackupItems() []list.Item {
+	snapshots := m.folderBackups()
+	items := make([]list.Item, 0, len(snapshots))
+	for i, snapshot := range snapshots {
+		label := shortID(snapshot.ID)
+		if i == 0 {
+			label = "latest"
+		}
+		items = append(items, homeListItem{title: fmt.Sprintf("%-8s  %-12s  %s", label, compactSnapshotTime(snapshot.StartTime), formatBytes(snapshot.SizeBytes))})
+	}
+	if len(items) == 0 {
+		items = append(items, homeListItem{title: "No snapshots for selected root"})
+	}
+	return items
+}
+
+func (m model) homeView() string {
+	width := m.contentWidth()
+	if width < 72 {
+		width = 72
+	}
+	m.syncHomeComponents()
+	if m.homeMode != homeDetailOverview {
+		return m.homeDetailFrame(width) + "\n" + m.homeFooter(width)
+	}
+	if width < 92 {
+		return m.homeStackedFrame(width) + "\n" + m.homeFooter(width)
+	}
+	return m.homeFrame(width) + "\n" + m.homeFooter(width)
+}
+
+func (m model) homeFrame(width int) string {
+	frameHeight := m.homeFrameHeight()
+	bodyHeight := frameHeight - 2
+	innerWidth := width - 2
+	leftWidth := max(28, min(38, innerWidth/3))
+	rightWidth := innerWidth - leftWidth - 1
+	topHeight := max(6, (bodyHeight-1)/2)
+	bottomHeight := bodyHeight - topHeight - 1
+
+	roots := m.homePaneView(homePaneRoots, "Roots", m.homeRoots.View(), leftWidth, topHeight, m.homeFocus == homeFocusRoots)
+	detail := m.homePaneView(homePaneDetails, m.homeDetailsTitle(), m.homeDetail.View(), rightWidth, topHeight, false)
+	snapshots := m.homePaneView(homePaneBackups, "Backups", m.homeBackups.View(), leftWidth, bottomHeight, m.homeFocus == homeFocusBackups)
+	activity := m.homePaneView(homePaneActivity, "Activity / System", m.homeActivity.View(), rightWidth, bottomHeight, m.homeFocus == homeFocusSystem)
+
+	lines := []string{m.homeHeader(width)}
+	for i := 0; i < topHeight; i++ {
+		lines = append(lines, m.homeFrameRow(roots[i], detail[i]))
+	}
+	lines = append(lines, m.homeDivider(leftWidth, rightWidth))
+	for i := 0; i < bottomHeight; i++ {
+		lines = append(lines, m.homeFrameRow(snapshots[i], activity[i]))
+	}
+	lines = append(lines, homeBorderStyle.Render("└"+strings.Repeat("─", leftWidth)+"┴"+strings.Repeat("─", rightWidth)+"┘"))
+	return strings.Join(lines, "\n")
+}
+
+func (m model) homeStackedFrame(width int) string {
+	innerWidth := width - 2
+	paneHeight := 6
+	sections := [][]string{
+		m.homePaneView(homePaneRoots, "Roots", m.homeRoots.View(), innerWidth, paneHeight, m.homeFocus == homeFocusRoots),
+		m.homePaneView(homePaneDetails, m.homeDetailsTitle(), m.homeDetail.View(), innerWidth, paneHeight, false),
+		m.homePaneView(homePaneBackups, "Backups", m.homeBackups.View(), innerWidth, paneHeight, m.homeFocus == homeFocusBackups),
+		m.homePaneView(homePaneActivity, "Activity / System", m.homeActivity.View(), innerWidth, paneHeight, m.homeFocus == homeFocusSystem),
+	}
+	lines := []string{m.homeHeader(width)}
+	for sectionIndex, section := range sections {
+		if sectionIndex > 0 {
+			lines = append(lines, homeBorderStyle.Render("├"+strings.Repeat("─", innerWidth)+"┤"))
+		}
+		for _, line := range section {
+			lines = append(lines, homeBorderStyle.Render("│")+line+homeBorderStyle.Render("│"))
+		}
+	}
+	lines = append(lines, homeBorderStyle.Render("└"+strings.Repeat("─", innerWidth)+"┘"))
+	return strings.Join(lines, "\n")
+}
+
+func (m model) homeHeader(width int) string {
+	innerWidth := width - 2
+	left := " p2pbk "
+	right := " " + strings.Join([]string{
+		"daemon: " + m.homeDaemonLabel(),
+		"peers: " + m.homePeerCountLabel(),
+		"repo: " + m.homeRepoLabel(),
+		"op: " + m.homeOperationLabel(),
+	}, "  ") + " "
+	space := innerWidth - lipgloss.Width(left) - lipgloss.Width(right)
+	if space < 1 {
+		availableRight := max(0, innerWidth-lipgloss.Width(left)-1)
+		right = " " + middleTruncate(strings.TrimSpace(right), max(0, availableRight-2)) + " "
+		space = innerWidth - lipgloss.Width(left) - lipgloss.Width(right)
+	}
+	return homeBorderStyle.Render("┌") + homeTitleStyle.Render(left) + homeBorderStyle.Render(strings.Repeat("─", max(0, space))) + homeMutedStyle.Render(right) + homeBorderStyle.Render("┐")
+}
+
+func (m model) homeFrameRow(left, right string) string {
+	return homeBorderStyle.Render("│") + left + homeBorderStyle.Render("│") + right + homeBorderStyle.Render("│")
+}
+
+func (m model) homeDivider(leftWidth, rightWidth int) string {
+	return homeBorderStyle.Render("├" + strings.Repeat("─", leftWidth) + "┼" + strings.Repeat("─", rightWidth) + "┤")
+}
+
+func (m model) homePaneView(pane int, title, body string, width, height int, focused bool) []string {
+	rows := strings.Split(body, "\n")
+	lines := make([]string, 0, height)
+	lines = append(lines, homeCell(m.homePaneTitle(pane, title, width, focused), width))
+	for _, row := range rows {
+		if len(lines) >= height {
+			break
+		}
+		lines = append(lines, homeCell(row, width))
+	}
+	for len(lines) < height {
+		lines = append(lines, homeCell("", width))
+	}
+	return lines
+}
+
+func (m model) homePaneTitle(pane int, title string, width int, focused bool) string {
+	if focused {
+		style := homeFocusRoot
+		switch pane {
+		case homePaneBackups:
+			style = homeFocusBackup
+		case homePaneActivity:
+			style = homeFocusActivityTitle
+		}
+		return style.Width(width).Render(" " + strings.ToUpper(title) + " ")
+	}
+	return homeTitleStyle.Render(" " + title + " ")
+}
+
+func (m model) homeDetailsTitle() string {
+	switch m.homeFocus {
+	case homeFocusBackups:
+		return "Details / selected backup"
+	case homeFocusSystem:
+		return "Details / system"
+	default:
+		return "Details / selected root"
+	}
+}
+
+func (m model) homeOverviewDetailRows(width int) []string {
+	switch m.homeFocus {
+	case homeFocusBackups:
+		return m.homeSelectedBackupRows(width)
+	case homeFocusSystem:
+		return m.homeSystemSummaryRows(width)
+	default:
+		return m.homeSelectedRootRows(width)
+	}
+}
+
+func (m model) homeSelectedRootRows(width int) []string {
+	if len(m.status.Roots) == 0 {
+		return []string{
+			homeMutedStyle.Render("Nothing selected."),
+			homeMutedStyle.Render("Add a folder, then press b to back it up."),
+		}
+	}
+	root := m.status.Roots[min(m.folderIndex, len(m.status.Roots)-1)]
+	latest := m.selectedRootLatestBackup()
+	lastBackup := "never"
+	if latest.ID != "" {
+		lastBackup = firstNonEmpty(compactSnapshotTime(latest.StartTime), latest.StartTime)
+	}
+	rows := []string{
+		"Root: " + homeShortPath(root.Path),
+		"Last backup: " + lastBackup,
+		fmt.Sprintf("Snapshots: %d   Size: %s", root.Snapshots, formatBytes(root.SizeBytes)),
+		"Protection: " + colorByStatus(root.Protection).Render(root.Protection),
+		"Peers: " + m.homePeerCountLabel() + "   Receipts: " + fmt.Sprintf("%d", m.status.ReceiptCount),
+		"Audits: " + m.homeAuditLabel(),
+	}
+	if root.ProtectionNote != "" {
+		rows = append(rows, "Health: "+root.ProtectionNote)
+	}
+	if root.LastFailure != "" {
+		rows = append(rows, warnStyle.Render("Last error: "+root.LastFailure))
+	}
+	for i, row := range rows {
+		rows[i] = homeTruncateStyled(row, width)
+	}
+	return rows
+}
+
+func (m model) homeSelectedBackupRows(width int) []string {
+	snapshot := m.selectedHomeSnapshot()
+	if snapshot.ID == "" {
+		return []string{
+			homeMutedStyle.Render("No backup selected."),
+			homeMutedStyle.Render("Select a root with snapshots first."),
+		}
+	}
+	rows := []string{
+		"Backup: " + m.homeSnapshotLabel(snapshot),
+		"Snapshot ID: " + shortID(snapshot.ID),
+		"Source: " + homeShortPath(snapshot.Source),
+		"Started: " + firstNonEmpty(compactSnapshotTime(snapshot.StartTime), snapshot.StartTime),
+		fmt.Sprintf("Files: %d   Dirs: %d   Size: %s", snapshot.Files, snapshot.Dirs, formatBytes(snapshot.SizeBytes)),
+		"Restore target: " + defaultRestoreTarget(snapshot.ID),
+	}
+	for i, row := range rows {
+		rows[i] = homeTruncateStyled(row, width)
+	}
+	return rows
+}
+
+func (m model) homeSystemSummaryRows(width int) []string {
+	rows := []string{
+		"Repository: " + m.homeRepoLabel(),
+		"Storage: " + firstNonEmpty(m.status.StorageMode, "unknown"),
+		"Daemon: " + m.homeDaemonLabel(),
+		"Peers: " + m.homePeerCountLabel(),
+		fmt.Sprintf("Shards: %d data + %d parity", m.status.DataShards, m.status.ParityShards),
+		"Schedule: " + firstNonEmpty(m.summary.Schedule, m.status.Schedule, "unknown"),
+		"Retention: " + firstNonEmpty(m.summary.Retention, m.status.Retention, "unknown"),
+		"Config: " + firstNonEmpty(m.summary.Path, m.configPath, "missing"),
+	}
+	for i, row := range rows {
+		rows[i] = homeTruncateStyled(row, width)
+	}
+	return rows
+}
+
+func (m model) homeActivityRows(width int) []string {
+	rows := []string{}
+	if m.op != nil {
+		bar := m.progress
+		bar.Width = max(12, width)
+		rows = append(rows, homeOpStyle.Render(m.homeOperationDetail(width)))
+		rows = append(rows, bar.ViewAs(progressPercent(m.op.event.BytesDone, m.op.event.BytesTotal)))
+	}
+	activity := append([]string(nil), m.activity...)
+	if len(activity) == 0 && len(m.daemon.LastLines) > 0 {
+		for _, line := range m.daemon.LastLines {
+			activity = append(activity, "daemon "+line)
+		}
+	}
+	for i := len(activity) - 1; i >= 0; i-- {
+		rows = append(rows, homeMutedStyle.Render(middleTruncate(activity[i], width)))
+	}
+	if len(rows) == 0 {
+		rows = append(rows, homeMutedStyle.Render("No activity yet."))
+	}
+	return rows
+}
+
+func (m model) homeFooter(width int) string {
+	bindings := m.homeHelpBindings().ShortHelp()
+	parts := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		if !binding.Enabled() {
+			continue
+		}
+		help := binding.Help()
+		if help.Key == "" {
+			continue
+		}
+		parts = append(parts, homeKeyStyle.Render(help.Key)+" "+help.Desc)
+	}
+	line := strings.Join(parts, "  ")
+	if lipgloss.Width(line) <= width {
+		return line
+	}
+	compact := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		help := binding.Help()
+		if help.Key != "" {
+			compact = append(compact, homeKeyStyle.Render(help.Key))
+		}
+	}
+	return strings.Join(compact, " ")
+}
+
+func (m model) homeHelpBindings() homeHelpBindings {
+	if m.homeMode == homeDetailHelp {
+		return homeHelpBindings{
+			short: []key.Binding{homeKeys.Back, homeKeys.Quit},
+			full:  [][]key.Binding{{homeKeys.Back, homeKeys.Quit}},
+		}
+	}
+	if m.homeMode != homeDetailOverview {
+		parts := []key.Binding{homeKeys.Back}
+		switch m.homeMode {
+		case homeDetailRoot:
+			parts = append(parts, homeKeys.Backup, homeKeys.Remove, homeKeys.Audit)
+		case homeDetailBackup:
+			parts = append(parts, homeKeys.Restore, homeKeys.Audit)
+		case homeDetailSystem:
+			parts = append(parts, homeKeys.Edit, homeKeys.Init, homeKeys.Start, homeKeys.Stop, homeKeys.Reset)
+		}
+		parts = append(parts, homeKeys.Help, homeKeys.Quit)
+		return homeHelpBindings{short: parts, full: [][]key.Binding{parts}}
+	}
+	switch m.homeFocus {
+	case homeFocusBackups:
+		return homeHelpBindings{
+			short: []key.Binding{homeKeys.Up, homeKeys.Down, homeKeys.Restore, homeKeys.Details, homeKeys.NextPane, homeKeys.Help, homeKeys.Quit},
+			full:  [][]key.Binding{{homeKeys.Up, homeKeys.Down, homeKeys.Restore, homeKeys.Details}, {homeKeys.NextPane, homeKeys.PrevPane, homeKeys.PrevTab, homeKeys.NextTab}, {homeKeys.Help, homeKeys.Quit}},
+		}
+	case homeFocusSystem:
+		return homeHelpBindings{
+			short: []key.Binding{homeKeys.NextPane, homeKeys.Start, homeKeys.Stop, homeKeys.Audit, homeKeys.Password, homeKeys.Details, homeKeys.Help, homeKeys.Quit},
+			full:  [][]key.Binding{{homeKeys.NextPane, homeKeys.PrevPane, homeKeys.Details}, {homeKeys.Start, homeKeys.Stop, homeKeys.Audit, homeKeys.Password}, {homeKeys.PrevTab, homeKeys.NextTab, homeKeys.Help, homeKeys.Quit}},
+		}
+	default:
+		return homeHelpBindings{
+			short: []key.Binding{homeKeys.Up, homeKeys.Down, homeKeys.Backup, homeKeys.Add, homeKeys.Remove, homeKeys.Details, homeKeys.NextPane, homeKeys.Help, homeKeys.Quit},
+			full:  [][]key.Binding{{homeKeys.Up, homeKeys.Down, homeKeys.Details}, {homeKeys.Backup, homeKeys.Add, homeKeys.Remove}, {homeKeys.NextPane, homeKeys.PrevPane, homeKeys.PrevTab, homeKeys.NextTab}, {homeKeys.Help, homeKeys.Quit}},
+		}
+	}
+}
+
+func (m model) homeFrameHeight() int {
+	height := m.tableHeight(8)
+	if height < 16 {
+		return 16
+	}
+	if height > 28 {
+		return 28
+	}
+	return height
+}
+
+func (m model) homeDaemonLabel() string {
+	if m.daemon.Running {
+		return "running"
+	}
+	return "stopped"
+}
+
+func (m model) homePeerCountLabel() string {
+	healthy := 0
+	for _, peer := range m.status.Peers {
+		if peer.Status == "healthy" {
+			healthy++
+		}
+	}
+	return fmt.Sprintf("%d/%d", healthy, len(m.status.Peers))
+}
+
+func (m model) homeRepoLabel() string {
+	if m.status.Repository == "initialized" && m.status.RepositoryError == "" {
+		return "ok"
+	}
+	return backupStoreLabel(m.status.Repository)
+}
+
+func (m model) homeAuditLabel() string {
+	if m.status.AuditCount == 0 {
+		return "unknown"
+	}
+	return fmt.Sprintf("%d records", m.status.AuditCount)
+}
+
+func (m model) homeOperationLabel() string {
+	if m.op == nil {
+		return "idle"
+	}
+	event := m.op.event
+	label := strings.TrimSpace(event.Kind + " " + event.Phase)
+	if label == "" {
+		return "running"
+	}
+	return label
+}
+
+func (m model) homeOperationDetail(width int) string {
+	event := m.op.event
+	percent := int(progressPercent(event.BytesDone, event.BytesTotal) * 100)
+	parts := []string{strings.TrimSpace(event.Kind + " " + event.Phase)}
+	if parts[0] == "" {
+		parts[0] = "operation running"
+	}
+	parts = append(parts, fmt.Sprintf("%d%%", percent))
+	if event.SpeedBps > 0 {
+		parts = append(parts, formatBytes(int64(event.SpeedBps))+"/s")
+	}
+	if event.ETA > 0 {
+		parts = append(parts, "ETA "+etaLabel(event.ETA))
+	}
+	return middleTruncate(strings.Join(parts, "  "), width)
+}
+
+func (m model) homeSnapshotLabel(snapshot app.Snapshot) string {
+	if snapshot.ID == "" {
+		return "none"
+	}
+	if selected := m.selectedHomeSnapshot(); selected.ID == snapshot.ID && m.folderBackup == 0 {
+		return "latest"
+	}
+	return shortID(snapshot.ID)
+}
+
+func (m model) homeDetailFrame(width int) string {
+	frameHeight := m.homeFrameHeight()
+	innerWidth := width - 2
+	title := m.homeDetailTitle()
+	m.homeDetail.Width = max(1, innerWidth)
+	m.homeDetail.Height = max(1, frameHeight-2)
+	m.homeDetail.SetContent(strings.Join(m.homeDetailRows(innerWidth-2), "\n"))
+	lines := []string{m.homeDetailHeader(width, title)}
+	for _, line := range strings.Split(m.homeDetail.View(), "\n") {
+		lines = append(lines, homeBorderStyle.Render("│")+homeCell(line, innerWidth)+homeBorderStyle.Render("│"))
+	}
+	for len(lines) < frameHeight-1 {
+		lines = append(lines, homeBorderStyle.Render("│")+homeCell("", innerWidth)+homeBorderStyle.Render("│"))
+	}
+	lines = append(lines, homeBorderStyle.Render("└"+strings.Repeat("─", innerWidth)+"┘"))
+	return strings.Join(lines, "\n")
+}
+
+func (m model) homeDetailHeader(width int, title string) string {
+	innerWidth := width - 2
+	left := " p2pbk / " + title + " "
+	right := " " + strings.Join([]string{
+		"daemon: " + m.homeDaemonLabel(),
+		"peers: " + m.homePeerCountLabel(),
+		"repo: " + m.homeRepoLabel(),
+	}, "  ") + " "
+	space := innerWidth - lipgloss.Width(left) - lipgloss.Width(right)
+	if space < 0 {
+		right = " " + middleTruncate(strings.TrimSpace(right), max(0, innerWidth-lipgloss.Width(left)-2)) + " "
+		space = innerWidth - lipgloss.Width(left) - lipgloss.Width(right)
+	}
+	return homeBorderStyle.Render("┌") + homeTitleStyle.Render(left) + homeBorderStyle.Render(strings.Repeat("─", max(0, space))) + homeMutedStyle.Render(right) + homeBorderStyle.Render("┐")
+}
+
+func (m model) homeDetailTitle() string {
+	switch m.homeMode {
+	case homeDetailRoot:
+		return "root details"
+	case homeDetailBackup:
+		return "backup details"
+	case homeDetailSystem:
+		return "system"
+	case homeDetailHelp:
+		return "help"
+	default:
+		return "overview"
+	}
+}
+
+func (m model) homeDetailRows(width int) []string {
+	switch m.homeMode {
+	case homeDetailRoot:
+		return m.homeRootDetailRows(width)
+	case homeDetailBackup:
+		return m.homeBackupDetailRows(width)
+	case homeDetailSystem:
+		return m.homeSystemDetailRows(width)
+	case homeDetailHelp:
+		return m.homeHelpRows(width)
+	default:
+		return nil
+	}
+}
+
+func (m model) homeRootDetailRows(width int) []string {
+	if len(m.status.Roots) == 0 {
+		return []string{homeMutedStyle.Render("No protected root selected.")}
+	}
+	root := m.status.Roots[min(m.folderIndex, len(m.status.Roots)-1)]
+	rows := []string{
+		"Root: " + homeShortPath(root.Path),
+		"Status: " + colorByStatus(root.Protection).Render(root.Protection),
+		"",
+		"Path exists: " + boolWord(root.Kind != "missing", "yes", "no"),
+		"Kind: " + root.Kind,
+		fmt.Sprintf("Snapshots: %d", root.Snapshots),
+		"Latest backup: " + m.folderLastBackup(root),
+		"Size: " + formatBytes(root.SizeBytes),
+		"Last success: " + firstNonEmpty(root.LastSuccess, "none"),
+		"Last failure: " + firstNonEmpty(root.LastFailure, "none"),
+		"",
+		"Protection explanation",
+		m.homeProtectionExplanation(root),
+		"",
+		"Storage policy",
+		fmt.Sprintf("Data shards: %d", m.status.DataShards),
+		fmt.Sprintf("Parity shards: %d", m.status.ParityShards),
+		fmt.Sprintf("Receipts: %d", m.status.ReceiptCount),
+		"Audits: " + m.homeAuditLabel(),
+	}
+	return homeTruncateRows(rows, width)
+}
+
+func (m model) homeBackupDetailRows(width int) []string {
+	snapshot := m.selectedHomeSnapshot()
+	if snapshot.ID == "" {
+		return []string{homeMutedStyle.Render("No backup selected.")}
+	}
+	rows := []string{
+		"Snapshot: " + snapshot.ID,
+		"Source: " + homeShortPath(snapshot.Source),
+		"Started: " + firstNonEmpty(snapshot.StartTime, "unknown"),
+		"Description: " + firstNonEmpty(snapshot.Description, "none"),
+		"",
+		"Contents",
+		fmt.Sprintf("Files: %d", snapshot.Files),
+		fmt.Sprintf("Directories: %d", snapshot.Dirs),
+		"Logical size: " + formatBytes(snapshot.SizeBytes),
+		"",
+		"Restore",
+		"Default target: " + defaultRestoreTarget(snapshot.ID),
+		"",
+		"Distributed storage",
+		fmt.Sprintf("Receipts: %d recorded", m.status.ReceiptCount),
+		"Peers: " + m.homePeerCountLabel(),
+		"Audit history: " + m.homeAuditLabel(),
+	}
+	return homeTruncateRows(rows, width)
+}
+
+func (m model) homeSystemDetailRows(width int) []string {
+	rows := []string{
+		"Repository",
+		"Status: " + m.homeRepoLabel(),
+		"Storage: " + firstNonEmpty(m.status.StorageMode, "unknown"),
+		"Config: " + firstNonEmpty(m.summary.Path, m.configPath, "missing"),
+		"",
+		"Paths",
+		"Data: " + firstNonEmpty(m.summary.DataDir, m.status.DataDir, "unknown"),
+		"Store: " + firstNonEmpty(m.summary.StoreDir, m.status.StoreDir, "unknown"),
+		"Cache: " + firstNonEmpty(m.summary.CacheDir, m.status.CacheDir, "unknown"),
+		"",
+		"Backup policy",
+		"Schedule: " + firstNonEmpty(m.summary.Schedule, m.status.Schedule, "unknown"),
+		"Retention: " + firstNonEmpty(m.summary.Retention, m.status.Retention, "unknown"),
+		"Max protected bytes: " + formatBytes(m.summary.MaxProtectedBytes),
+		fmt.Sprintf("Shards: %d data + %d parity", m.status.DataShards, m.status.ParityShards),
+		"",
+		"Networking",
+		"Discovery: " + firstNonEmpty(m.summary.Discovery, "unknown"),
+		"Protocol: " + firstNonEmpty(m.summary.ProtocolID, "unknown"),
+		"Peers: " + m.homePeerCountLabel(),
+	}
+	rows = append(rows, m.homePeerDetailRows()...)
+	rows = append(rows,
+		"",
+		"Service",
+		"Daemon: "+m.homeDaemonLabel(),
+		"LocalDB: "+firstNonEmpty(m.status.LocalDBStatus, "unknown"),
+		"Next check: "+m.nextMaintenanceLabel(),
+	)
+	return homeTruncateRows(rows, width)
+}
+
+func (m model) homePeerDetailRows() []string {
+	if len(m.status.Peers) == 0 {
+		return []string{"Peer detail: no known peers yet"}
+	}
+	rows := []string{"Known peers"}
+	limit := min(4, len(m.status.Peers))
+	for i := 0; i < limit; i++ {
+		peer := m.status.Peers[i]
+		rows = append(rows, fmt.Sprintf("%s  %s  score %.1f  shards %d  failures %d",
+			shortText(peer.ID, 12),
+			firstNonEmpty(peer.Status, "unknown"),
+			peer.Score,
+			peer.StoredShards,
+			peer.Failures,
+		))
+	}
+	if len(m.status.Peers) > limit {
+		rows = append(rows, fmt.Sprintf("... %d more peers", len(m.status.Peers)-limit))
+	}
+	return rows
+}
+
+func (m model) homeHelpRows(width int) []string {
+	rows := []string{
+		"Navigation",
+		"tab/right: next pane",
+		"shift+tab/left: previous pane",
+		"up/down: select root or backup",
+		"enter: open details for focused pane",
+		"esc: back from details",
+		"",
+		"Root actions",
+		"b: backup selected root",
+		"a: add protected root",
+		"d: remove selected root",
+		"",
+		"Backup actions",
+		"r: restore selected backup",
+		"u: run audit",
+		"",
+		"System actions",
+		"p: enter password",
+		"e: edit config",
+		"i: initialize when setup is missing",
+		"s/S: start or stop service",
+		"x: reset local state from system details",
+		"",
+		"Legacy tabs",
+		"[/]: switch to previous or next legacy tab while they still exist.",
+	}
+	return homeTruncateRows(rows, width)
+}
+
+func (m model) homeProtectionExplanation(root app.RootStatus) string {
+	switch root.Protection {
+	case "protected":
+		return "Enough backup history and peer evidence exists for the configured policy."
+	case "degraded":
+		return "Distributed protection exists, but there are not enough healthy peers right now."
+	case "local only":
+		return "Backups exist locally, but no distributed shard placement is confirmed."
+	case "offload unknown":
+		return "Backups exist, but p2pbk has no shard receipts for distributed storage yet."
+	case "unprotected":
+		return "This root has no snapshot yet. Press b to create the first backup."
+	case "missing":
+		return "The configured path no longer exists on this machine."
+	default:
+		return firstNonEmpty(root.ProtectionNote, "No additional health detail is available.")
+	}
 }
 
 func (m model) dashboardView() string {
@@ -869,6 +1931,25 @@ func (m model) latestBackup() app.Snapshot {
 	return m.status.Snapshots[0]
 }
 
+func (m model) selectedRootLatestBackup() app.Snapshot {
+	for _, snapshot := range m.folderBackups() {
+		return snapshot
+	}
+	return app.Snapshot{}
+}
+
+func (m model) selectedHomeSnapshot() app.Snapshot {
+	snapshots := m.folderBackups()
+	if len(snapshots) == 0 {
+		return app.Snapshot{}
+	}
+	index := min(m.folderBackup, len(snapshots)-1)
+	if index < 0 {
+		index = 0
+	}
+	return snapshots[index]
+}
+
 func (m model) latestBackupLabel() string {
 	snapshot := m.latestBackup()
 	if snapshot.ID == "" {
@@ -904,14 +1985,14 @@ func backupStoreLabel(status string) string {
 }
 
 func (m model) statusBadge(value string) string {
-	style := badgeStyle.Foreground(lipgloss.Color("15")).Background(lipgloss.Color("244"))
+	style := badgeStyle.Foreground(cyberText).Background(cyberPanel)
 	switch value {
 	case "protected", "running", "initialized":
-		style = badgeStyle.Foreground(lipgloss.Color("16")).Background(lipgloss.Color("42"))
+		style = badgeStyle.Foreground(cyberBg).Background(cyberGreen)
 	case "local only", "offload unknown", "degraded", "stopped or unknown", "no folders":
-		style = badgeStyle.Foreground(lipgloss.Color("16")).Background(lipgloss.Color("214"))
+		style = badgeStyle.Foreground(cyberBg).Background(cyberAmber)
 	case "missing", "unprotected", "not initialized":
-		style = badgeStyle.Foreground(lipgloss.Color("15")).Background(lipgloss.Color("203"))
+		style = badgeStyle.Foreground(cyberBg).Background(cyberRed)
 	}
 	return style.Render(value)
 }
@@ -939,6 +2020,7 @@ func (m model) helpView() string {
 	parts := []string{"tab switch", "p password"}
 	rRestores := (m.tab == tabBackups && len(m.status.Snapshots) > 0) ||
 		(m.tab == tabFolders && m.folderFocus == folderPaneBackups && len(m.folderBackups()) > 0) ||
+		(m.tab == tabHome && m.selectedRootLatestBackup().ID != "") ||
 		(m.tab == tabDashboard && len(m.status.Snapshots) > 0)
 	if !rRestores {
 		parts = append(parts, "r refresh")
@@ -947,6 +2029,17 @@ func (m model) helpView() string {
 		parts = append(parts, "up/down select")
 	}
 	switch m.tab {
+	case tabHome:
+		parts = append(parts, "a add folder")
+		if m.op == nil && len(m.status.Roots) > 0 {
+			parts = append(parts, "b backup")
+		}
+		if m.op == nil && rRestores {
+			parts = append(parts, "r restore")
+		}
+		if m.op == nil {
+			parts = append(parts, "s start service", "S stop service")
+		}
 	case tabDashboard:
 		parts = append(parts, "a add folder")
 		if m.op == nil && len(m.status.Roots) > 0 {
@@ -1000,6 +2093,8 @@ func (m model) helpView() string {
 
 func (m model) maxSelected() int {
 	switch m.tab {
+	case tabHome:
+		return max(0, len(m.status.Roots)-1)
 	case tabFolders:
 		if m.folderFocus == folderPaneBackups {
 			return max(0, len(m.folderBackups())-1)
@@ -1029,6 +2124,10 @@ func (m *model) moveFolderSelection(delta int) {
 		m.folderBackup = next
 		return
 	}
+	m.moveRootSelection(delta)
+}
+
+func (m *model) moveRootSelection(delta int) {
 	next := m.folderIndex + delta
 	if next < 0 {
 		next = 0
@@ -1251,7 +2350,7 @@ func colorByStatus(status string) lipgloss.Style {
 	case "missing", "unprotected", "blocked":
 		return errorStyle
 	default:
-		return lipgloss.NewStyle()
+		return lipgloss.NewStyle().Foreground(cyberText)
 	}
 }
 
@@ -1292,20 +2391,121 @@ func renderTable(columns []table.Column, rows []table.Row, cursor int, selectabl
 	styles := table.DefaultStyles()
 	styles.Header = styles.Header.
 		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("63")).
+		BorderForeground(cyberViolet).
 		BorderBottom(true).
 		Bold(true).
-		Foreground(lipgloss.Color("86"))
+		Foreground(cyberFocus)
 	if selectable {
 		styles.Selected = styles.Selected.
-			Foreground(lipgloss.Color("15")).
-			Background(lipgloss.Color("63")).
+			Foreground(cyberText).
+			Background(cyberRow).
 			Bold(false)
 	} else {
 		styles.Selected = lipgloss.NewStyle()
 	}
 	t.SetStyles(styles)
 	return panelStyle.Render(t.View())
+}
+
+func homeCell(value string, width int) string {
+	if lipgloss.Width(value) > width {
+		value = homeTruncateStyled(value, width)
+	}
+	return homePad(value, width)
+}
+
+func homeTruncateRows(rows []string, width int) []string {
+	out := make([]string, len(rows))
+	for i, row := range rows {
+		out[i] = homeTruncateStyled(row, width)
+	}
+	return out
+}
+
+func homePad(value string, width int) string {
+	padding := width - lipgloss.Width(value)
+	if padding <= 0 {
+		return value
+	}
+	return value + strings.Repeat(" ", padding)
+}
+
+func homeTruncateStyled(value string, width int) string {
+	if lipgloss.Width(value) <= width {
+		return value
+	}
+	plain := stripANSI(value)
+	return middleTruncate(plain, width)
+}
+
+func stripANSI(value string) string {
+	var out strings.Builder
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if ch == '\x1b' {
+			if i+1 < len(value) && value[i+1] == '[' {
+				i += 2
+				for i < len(value) {
+					if value[i] >= '@' && value[i] <= '~' {
+						break
+					}
+					i++
+				}
+			} else if i+1 < len(value) {
+				i++
+			}
+			continue
+		}
+		out.WriteByte(ch)
+	}
+	return out.String()
+}
+
+func homeShortPath(path string) string {
+	if path == "" {
+		return "unknown"
+	}
+	home, err := os.UserHomeDir()
+	if err == nil && home != "" {
+		cleanHome := filepath.Clean(home)
+		cleanPath := filepath.Clean(path)
+		if cleanPath == cleanHome {
+			return "~"
+		}
+		if strings.HasPrefix(cleanPath, cleanHome+string(os.PathSeparator)) {
+			return "~" + strings.TrimPrefix(cleanPath, cleanHome)
+		}
+	}
+	return filepath.Clean(path)
+}
+
+func compactSnapshotTime(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	for _, layout := range []string{
+		time.RFC3339,
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05 -0700 MST",
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+	} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			now := time.Now()
+			if parsed.Year() == now.Year() && parsed.YearDay() == now.YearDay() {
+				return parsed.Format("15:04")
+			}
+			if parsed.Year() == now.Year() {
+				return parsed.Format("Jan 02")
+			}
+			return parsed.Format("2006-01-02")
+		}
+	}
+	if len(value) >= 16 && value[4] == '-' && value[7] == '-' {
+		return value[:16]
+	}
+	return middleTruncate(value, 12)
 }
 
 func formatBytes(bytes int64) string {
