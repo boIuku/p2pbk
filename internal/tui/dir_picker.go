@@ -41,6 +41,10 @@ func newDirPicker(title string, start string, targetField int, multiple bool) *d
 	input := textinput.New()
 	input.Placeholder = "Paste or browse path"
 	input.SetValue(filepath.Clean(start))
+	input.PromptStyle = lipgloss.NewStyle().Bold(true).Foreground(cyberFocus2)
+	input.TextStyle = lipgloss.NewStyle().Foreground(cyberText)
+	input.PlaceholderStyle = lipgloss.NewStyle().Foreground(cyberMuted)
+	input.Cursor.Style = lipgloss.NewStyle().Foreground(cyberFocus2)
 	input.Focus()
 	picker := &dirPickerState{
 		title:       title,
@@ -174,14 +178,14 @@ func (p *dirPickerState) refreshTable() {
 	styles := table.DefaultStyles()
 	styles.Header = styles.Header.
 		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("63")).
+		BorderForeground(cyberPanel).
 		BorderBottom(true).
 		Bold(true).
-		Foreground(lipgloss.Color("86"))
+		Foreground(cyberFocus)
 	styles.Selected = styles.Selected.
-		Foreground(lipgloss.Color("15")).
-		Background(lipgloss.Color("63")).
-		Bold(false)
+		Foreground(cyberFocus2).
+		Background(cyberRow).
+		Bold(true)
 	p.table.SetStyles(styles)
 }
 
