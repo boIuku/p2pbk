@@ -54,6 +54,12 @@ type RestoreResult struct {
 	Stats      restore.Stats
 }
 
+type Progress struct {
+	BytesDone  int64
+	BytesTotal int64
+	Message    string
+}
+
 type RepositoryStatus struct {
 	ConfigPath    string
 	StorageType   string
@@ -62,13 +68,14 @@ type RepositoryStatus struct {
 }
 
 type SnapshotInfo struct {
-	ID          manifest.ID
-	Source      snapshot.SourceInfo
-	Description string
-	StartTime   string
-	EndTime     string
-	Root        string
-	Stats       snapshot.Stats
+	ID           manifest.ID
+	Source       snapshot.SourceInfo
+	Description  string
+	StartTime    string
+	EndTime      string
+	Root         string
+	Stats        snapshot.Stats
+	StorageBytes int64
 }
 
 type MaintenanceStatus struct {
@@ -104,24 +111,33 @@ func (e *Engine) ensureRepository(ctx context.Context) error {
 }
 
 func snapshotInfo(man *snapshot.Manifest) SnapshotInfo {
+	var storageBytes int64
+	if man.StorageStats != nil {
+		storageBytes = man.StorageStats.NewData.PackedContentBytes
+	}
 	return SnapshotInfo{
-		ID:          man.ID,
-		Source:      man.Source,
-		Description: man.Description,
-		StartTime:   man.StartTime.Format(time.RFC3339),
-		EndTime:     man.EndTime.Format(time.RFC3339),
-		Root:        man.RootObjectID().String(),
-		Stats:       man.Stats,
+		ID:           man.ID,
+		Source:       man.Source,
+		Description:  man.Description,
+		StartTime:    man.StartTime.Format(time.RFC3339),
+		EndTime:      man.EndTime.Format(time.RFC3339),
+		Root:         man.RootObjectID().String(),
+		Stats:        man.Stats,
+		StorageBytes: storageBytes,
 	}
 }
 
 func (e *Engine) Backup(ctx context.Context, sourcePath, description string) (BackupResult, error) {
+	return e.BackupWithProgress(ctx, sourcePath, description, nil)
+}
+
+func (e *Engine) BackupWithProgress(ctx context.Context, sourcePath, description string, progress func(Progress)) (BackupResult, error) {
 	return secrets.WithPassword(e.Password, func() (BackupResult, error) {
-		return e.backup(ctx, sourcePath, description)
+		return e.backup(ctx, sourcePath, description, progress)
 	})
 }
 
-func (e *Engine) backup(ctx context.Context, sourcePath, description string) (BackupResult, error) {
+func (e *Engine) backup(ctx context.Context, sourcePath, description string, progress func(Progress)) (BackupResult, error) {
 	if err := e.ensureRepository(ctx); err != nil {
 		return BackupResult{}, err
 	}
@@ -149,6 +165,9 @@ func (e *Engine) backup(ctx context.Context, sourcePath, description string) (Ba
 		return BackupResult{}, fmt.Errorf("open kopia writer: %w", err)
 	}
 	uploader := snapshotfs.NewUploader(writer)
+	if progress != nil {
+		uploader.Progress = &backupProgress{progress: progress}
+	}
 	man, err := uploader.Upload(wctx, sourceEntry, policyTree, sourceInfo)
 	if err != nil {
 		return BackupResult{}, fmt.Errorf("upload kopia snapshot: %w", err)
@@ -165,12 +184,16 @@ func (e *Engine) backup(ctx context.Context, sourcePath, description string) (Ba
 }
 
 func (e *Engine) Restore(ctx context.Context, snapshotRef, targetPath string) (RestoreResult, error) {
+	return e.RestoreWithProgress(ctx, snapshotRef, targetPath, nil)
+}
+
+func (e *Engine) RestoreWithProgress(ctx context.Context, snapshotRef, targetPath string, progress func(Progress)) (RestoreResult, error) {
 	return secrets.WithPassword(e.Password, func() (RestoreResult, error) {
-		return e.restore(ctx, snapshotRef, targetPath)
+		return e.restore(ctx, snapshotRef, targetPath, progress)
 	})
 }
 
-func (e *Engine) restore(ctx context.Context, snapshotRef, targetPath string) (RestoreResult, error) {
+func (e *Engine) restore(ctx context.Context, snapshotRef, targetPath string, progress func(Progress)) (RestoreResult, error) {
 	rep, err := e.openRepository(ctx)
 	if err != nil {
 		return RestoreResult{}, err
@@ -193,13 +216,77 @@ func (e *Engine) restore(ctx context.Context, snapshotRef, targetPath string) (R
 	if err := output.Init(ctx); err != nil {
 		return RestoreResult{}, fmt.Errorf("initialize restore output: %w", err)
 	}
-	stats, err := restore.Entry(ctx, rep, output, rootEntry, restore.Options{
+	restoreOptions := restore.Options{
 		RestoreDirEntryAtDepth: math.MaxInt32,
-	})
+	}
+	if progress != nil {
+		total := man.Stats.TotalFileSize
+		restoreOptions.ProgressCallback = func(ctx context.Context, stats restore.Stats) {
+			progress(Progress{
+				BytesDone:  stats.RestoredTotalFileSize,
+				BytesTotal: total,
+				Message:    "restoring files",
+			})
+		}
+	}
+	stats, err := restore.Entry(ctx, rep, output, rootEntry, restoreOptions)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("restore kopia snapshot: %w", err)
 	}
 	return RestoreResult{ManifestID: man.ID, Stats: stats}, nil
+}
+
+type backupProgress struct {
+	snapshotfs.CountingUploadProgress
+	progress func(Progress)
+}
+
+func (p *backupProgress) UploadStarted() {
+	p.CountingUploadProgress.UploadStarted()
+	p.report("scanning files")
+}
+
+func (p *backupProgress) EstimatedDataSize(fileCount int, totalBytes int64) {
+	p.CountingUploadProgress.EstimatedDataSize(fileCount, totalBytes)
+	p.report("estimated backup size")
+}
+
+func (p *backupProgress) CachedFile(path string, size int64) {
+	p.CountingUploadProgress.CachedFile(path, size)
+	p.report("reusing unchanged files")
+}
+
+func (p *backupProgress) HashedBytes(numBytes int64) {
+	p.CountingUploadProgress.HashedBytes(numBytes)
+	p.report("backing up files")
+}
+
+func (p *backupProgress) FinishedHashingFile(fname string, numBytes int64) {
+	p.CountingUploadProgress.FinishedHashingFile(fname, numBytes)
+	p.report("backing up files")
+}
+
+func (p *backupProgress) StartedDirectory(dirname string) {
+	p.CountingUploadProgress.StartedDirectory(dirname)
+	p.report("scanning " + dirname)
+}
+
+func (p *backupProgress) UploadFinished() {
+	p.CountingUploadProgress.UploadFinished()
+	p.report("backup data written")
+}
+
+func (p *backupProgress) report(message string) {
+	if p.progress == nil {
+		return
+	}
+	counters := p.Snapshot()
+	done := counters.TotalHashedBytes + counters.TotalCachedBytes
+	p.progress(Progress{
+		BytesDone:  done,
+		BytesTotal: counters.EstimatedBytes,
+		Message:    message,
+	})
 }
 
 func (e *Engine) Status(ctx context.Context) (RepositoryStatus, error) {
@@ -247,12 +334,24 @@ func (e *Engine) listSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list kopia snapshots: %w", err)
 	}
-	out := make([]SnapshotInfo, 0, len(ids))
+	manifests := make([]*snapshot.Manifest, 0, len(ids))
 	for _, id := range ids {
 		man, err := snapshot.LoadSnapshot(ctx, rep, id)
 		if err != nil {
 			return nil, err
 		}
+		manifests = append(manifests, man)
+	}
+	if len(manifests) > 0 {
+		chronological := snapshot.SortByTime(manifests, false)
+		if err := snapshotfs.CalculateStorageStats(ctx, rep, chronological, func(m *snapshot.Manifest) error {
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("calculate snapshot storage stats: %w", err)
+		}
+	}
+	out := make([]SnapshotInfo, 0, len(manifests))
+	for _, man := range manifests {
 		out = append(out, snapshotInfo(man))
 	}
 	sort.Slice(out, func(i, j int) bool {

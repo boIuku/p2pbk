@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"p2pbk/internal/config"
@@ -139,89 +140,137 @@ func RestoreSnapshot(ctx context.Context, req RestoreRequest) (RestoreResult, er
 func BackupRootWithEvents(ctx context.Context, req BackupRequest, events chan<- OperationEvent) {
 	id := operationID("backup")
 	started := time.Now()
+	if req.ConfigPath == "" {
+		sendImmediateOperationError(ctx, events, id, "backup", "backing up", started, "p2pbk config file is required; pass --config or run p2pbk init first")
+		return
+	}
+	if req.Password == "" {
+		sendImmediateOperationError(ctx, events, id, "backup", "backing up", started, "p2pbk password is required; enter it in the TUI or set P2PBK_REPOSITORY_PASSWORD")
+		return
+	}
+	if req.Source == "" {
+		sendImmediateOperationError(ctx, events, id, "backup", "backing up", started, "backup source is required")
+		return
+	}
 	sources := SplitPathList(req.Source)
-	if len(sources) == 1 {
-		req.Source = sources[0]
+	if len(sources) != 1 {
+		sendImmediateOperationError(ctx, events, id, "backup", "backing up", started, fmt.Sprintf("backup source must be one directory, got %d; add assets separately", len(sources)))
+		return
+	}
+	req.Source = sources[0]
+	if info, err := os.Stat(req.Source); err != nil {
+		sendImmediateOperationError(ctx, events, id, "backup", "backing up", started, fmt.Sprintf("backup source %q: %v", req.Source, err))
+		return
+	} else if !info.IsDir() {
+		sendImmediateOperationError(ctx, events, id, "backup", "backing up", started, fmt.Sprintf("backup source %q is not a directory", req.Source))
+		return
+	}
+	if req.Description == "" {
+		req.Description = "manual"
 	}
 	total := dirBytes(req.Source)
-	if req.Config.Backup.DataShards > 0 {
-		total = ErasureStorageBytes(total, req.Config.Backup.DataShards, req.Config.Backup.ParityShards)
-	}
-	paths, pathErr := req.Config.Paths()
-	var before int64
-	if pathErr == nil {
-		before = dirBytes(paths.StoreDir)
-	}
-	done := make(chan struct{})
-	var result BackupResult
-	var err error
-	go func() {
-		defer close(done)
-		result, err = BackupRoot(ctx, req)
-	}()
-	pollOperation(ctx, events, pollRequest{
+	emitter := newOperationEmitter(ctx, events, operationEventBase{
 		ID:         id,
 		Kind:       "backup",
-		Phase:      "uploading",
+		Phase:      "backing up",
 		Source:     req.Source,
 		BytesTotal: total,
 		StartedAt:  started,
-		Done:       done,
-		Measure: func() int64 {
-			if pathErr != nil || paths == nil {
-				return 0
-			}
-			current := dirBytes(paths.StoreDir) - before
-			if current < 0 {
-				return 0
-			}
-			return current
-		},
-		Finish: func() (string, error) {
-			if err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("snapshot %s saved for %s", result.ManifestID, result.Source), nil
-		},
 	})
+	emitter.send(false, 0, total, "starting backup", nil, true)
+
+	engine := kopiaengine.New(req.ConfigPath, req.Config, req.Password)
+	var last kopiaengine.Progress
+	var lastMu sync.Mutex
+	result, err := engine.BackupWithProgress(ctx, req.Source, req.Description, func(progress kopiaengine.Progress) {
+		if progress.BytesTotal <= 0 {
+			progress.BytesTotal = total
+		}
+		lastMu.Lock()
+		last = progress
+		lastMu.Unlock()
+		emitter.send(false, progress.BytesDone, progress.BytesTotal, progress.Message, nil, false)
+	})
+	lastMu.Lock()
+	lastProgress := last
+	lastMu.Unlock()
+	if err != nil {
+		emitter.send(true, lastProgress.BytesDone, lastProgress.BytesTotal, "", err, true)
+		return
+	}
+	emitter.send(true, total, total, fmt.Sprintf("snapshot %s saved for %s", result.ManifestID, result.Source), nil, true)
 }
 
 func RestoreSnapshotWithEvents(ctx context.Context, req RestoreRequest, events chan<- OperationEvent) {
 	id := operationID("restore")
 	started := time.Now()
-	before := dirBytes(req.Target)
-	done := make(chan struct{})
-	var result RestoreResult
-	var err error
-	go func() {
-		defer close(done)
-		result, err = RestoreSnapshot(ctx, req)
-	}()
-	pollOperation(ctx, events, pollRequest{
+	if req.ConfigPath == "" {
+		sendImmediateOperationError(ctx, events, id, "restore", "restoring", started, "p2pbk config file is required; pass --config or run p2pbk init first")
+		return
+	}
+	if req.Password == "" {
+		sendImmediateOperationError(ctx, events, id, "restore", "restoring", started, "p2pbk password is required; enter it in the TUI or set P2PBK_REPOSITORY_PASSWORD")
+		return
+	}
+	if req.Snapshot == "" {
+		sendImmediateOperationError(ctx, events, id, "restore", "restoring", started, "snapshot id is required")
+		return
+	}
+	if req.Target == "" {
+		sendImmediateOperationError(ctx, events, id, "restore", "restoring", started, "restore target is required")
+		return
+	}
+	emitter := newOperationEmitter(ctx, events, operationEventBase{
 		ID:        id,
 		Kind:      "restore",
 		Phase:     "restoring",
 		Source:    req.Snapshot,
 		Target:    req.Target,
 		StartedAt: started,
-		Done:      done,
-		Measure: func() int64 {
-			current := dirBytes(req.Target) - before
-			if current < 0 {
-				return 0
-			}
-			return current
-		},
-		Finish: func() (string, error) {
-			if err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("restored %s to %s (%d files, %d dirs)", result.ManifestID, req.Target, result.Files, result.Dirs), nil
-		},
 	})
+	emitter.send(false, 0, 0, "starting restore", nil, true)
+
+	engine := kopiaengine.New(req.ConfigPath, req.Config, req.Password)
+	var last kopiaengine.Progress
+	var lastMu sync.Mutex
+	result, err := engine.RestoreWithProgress(ctx, req.Snapshot, req.Target, func(progress kopiaengine.Progress) {
+		lastMu.Lock()
+		last = progress
+		lastMu.Unlock()
+		emitter.send(false, progress.BytesDone, progress.BytesTotal, progress.Message, nil, false)
+	})
+	lastMu.Lock()
+	lastProgress := last
+	lastMu.Unlock()
+	if err != nil {
+		emitter.send(true, lastProgress.BytesDone, lastProgress.BytesTotal, "", err, true)
+		return
+	}
+	done := lastProgress.BytesTotal
+	if done <= 0 {
+		done = lastProgress.BytesDone
+	}
+	emitter.send(true, done, done, fmt.Sprintf("restored %s to %s (%d files, %d dirs)", result.ManifestID, req.Target, result.Stats.RestoredFileCount, result.Stats.RestoredDirCount), nil, true)
 }
 
-type pollRequest struct {
+func sendImmediateOperationError(ctx context.Context, events chan<- OperationEvent, id, kind, phase string, started time.Time, message string) {
+	err := errors.New(message)
+	select {
+	case events <- OperationEvent{
+		ID:        id,
+		Kind:      kind,
+		Phase:     phase,
+		Message:   message,
+		StartedAt: started,
+		UpdatedAt: time.Now(),
+		Done:      true,
+		Err:       err,
+	}:
+	case <-ctx.Done():
+	}
+}
+
+type operationEventBase struct {
 	ID         string
 	Kind       string
 	Phase      string
@@ -229,59 +278,77 @@ type pollRequest struct {
 	Target     string
 	BytesTotal int64
 	StartedAt  time.Time
-	Done       <-chan struct{}
-	Measure    func() int64
-	Finish     func() (string, error)
 }
 
-func pollOperation(ctx context.Context, events chan<- OperationEvent, req pollRequest) {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	send := func(done bool, msg string, err error) {
-		updated := time.Now()
-		bytesDone := req.Measure()
-		elapsed := updated.Sub(req.StartedAt).Seconds()
-		var speed float64
-		var eta time.Duration
-		if elapsed > 0 {
-			speed = float64(bytesDone) / elapsed
-		}
-		if speed > 0 && req.BytesTotal > bytesDone {
-			eta = time.Duration(float64(req.BytesTotal-bytesDone)/speed) * time.Second
-		}
-		select {
-		case events <- OperationEvent{
-			ID:         req.ID,
-			Kind:       req.Kind,
-			Phase:      req.Phase,
-			Source:     req.Source,
-			Target:     req.Target,
-			BytesDone:  bytesDone,
-			BytesTotal: req.BytesTotal,
-			SpeedBps:   speed,
-			ETA:        eta,
-			Message:    msg,
-			StartedAt:  req.StartedAt,
-			UpdatedAt:  updated,
-			Done:       done,
-			Err:        err,
-		}:
-		case <-ctx.Done():
-		}
+type operationEmitter struct {
+	ctx      context.Context
+	events   chan<- OperationEvent
+	base     operationEventBase
+	mu       sync.Mutex
+	lastSent time.Time
+}
+
+func newOperationEmitter(ctx context.Context, events chan<- OperationEvent, base operationEventBase) *operationEmitter {
+	return &operationEmitter{ctx: ctx, events: events, base: base}
+}
+
+func (e *operationEmitter) send(done bool, bytesDone, bytesTotal int64, msg string, err error, force bool) {
+	if bytesTotal <= 0 {
+		bytesTotal = e.base.BytesTotal
 	}
-	send(false, "started", nil)
-	for {
+	if bytesDone < 0 {
+		bytesDone = 0
+	}
+	if bytesTotal > 0 && bytesDone > bytesTotal {
+		bytesDone = bytesTotal
+	}
+
+	updated := time.Now()
+	e.mu.Lock()
+	if !force && !e.lastSent.IsZero() && updated.Sub(e.lastSent) < 250*time.Millisecond {
+		e.mu.Unlock()
+		return
+	}
+	e.lastSent = updated
+	e.mu.Unlock()
+
+	elapsed := updated.Sub(e.base.StartedAt).Seconds()
+	var speed float64
+	var eta time.Duration
+	if elapsed > 0 {
+		speed = float64(bytesDone) / elapsed
+	}
+	if speed > 0 && bytesTotal > bytesDone {
+		eta = time.Duration(float64(bytesTotal-bytesDone)/speed) * time.Second
+	}
+
+	event := OperationEvent{
+		ID:         e.base.ID,
+		Kind:       e.base.Kind,
+		Phase:      e.base.Phase,
+		Source:     e.base.Source,
+		Target:     e.base.Target,
+		BytesDone:  bytesDone,
+		BytesTotal: bytesTotal,
+		SpeedBps:   speed,
+		ETA:        eta,
+		Message:    msg,
+		StartedAt:  e.base.StartedAt,
+		UpdatedAt:  updated,
+		Done:       done,
+		Err:        err,
+	}
+	if done {
 		select {
-		case <-ctx.Done():
-			send(true, "cancelled", ctx.Err())
-			return
-		case <-ticker.C:
-			send(false, "running", nil)
-		case <-req.Done:
-			msg, err := req.Finish()
-			send(true, msg, err)
-			return
+		case e.events <- event:
+		case <-e.ctx.Done():
 		}
+		return
+	}
+	select {
+	case e.events <- event:
+	case <-e.ctx.Done():
+	default:
 	}
 }
 

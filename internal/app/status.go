@@ -16,13 +16,14 @@ import (
 )
 
 type Snapshot struct {
-	ID          string
-	Source      string
-	Description string
-	StartTime   string
-	Files       int
-	Dirs        int
-	SizeBytes   int64
+	ID               string
+	Source           string
+	Description      string
+	StartTime        string
+	Files            int
+	Dirs             int
+	SizeBytes        int64
+	LogicalSizeBytes int64
 }
 
 type RootStatus struct {
@@ -109,13 +110,14 @@ func CollectStatus(ctx context.Context, cfg config.Config, configPath, password 
 			} else {
 				for _, snapshot := range snapshots {
 					status.Snapshots = append(status.Snapshots, Snapshot{
-						ID:          string(snapshot.ID),
-						Source:      fmt.Sprint(snapshot.Source),
-						Description: snapshot.Description,
-						StartTime:   snapshot.StartTime,
-						Files:       int(snapshot.Stats.TotalFileCount),
-						Dirs:        int(snapshot.Stats.TotalDirectoryCount),
-						SizeBytes:   snapshot.Stats.TotalFileSize,
+						ID:               string(snapshot.ID),
+						Source:           fmt.Sprint(snapshot.Source),
+						Description:      snapshot.Description,
+						StartTime:        snapshot.StartTime,
+						Files:            int(snapshot.Stats.TotalFileCount),
+						Dirs:             int(snapshot.Stats.TotalDirectoryCount),
+						SizeBytes:        snapshot.StorageBytes,
+						LogicalSizeBytes: snapshot.Stats.TotalFileSize,
 					})
 				}
 			}

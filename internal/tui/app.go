@@ -615,8 +615,9 @@ func (m *model) syncHomeComponents() {
 	m.homeActivity.Height = max(1, bottomHeight-1)
 	m.homeHelp.Width = width
 
-	_ = m.homeRoots.SetItems(m.homeRootItems())
-	_ = m.homeBackups.SetItems(m.homeBackupItems())
+	listWidth := max(1, leftWidth-2)
+	_ = m.homeRoots.SetItems(m.homeRootItems(listWidth))
+	_ = m.homeBackups.SetItems(m.homeBackupItems(listWidth))
 	m.homeRoots.Select(min(m.folderIndex, max(0, len(m.status.Roots)-1)))
 	m.homeBackups.Select(min(m.folderBackup, max(0, len(m.folderBackups())-1)))
 	m.homeDetail.SetContent(strings.Join(m.homeOverviewDetailRows(m.homeDetail.Width), "\n"))
@@ -627,17 +628,17 @@ func (m model) homeLayout(width int) (leftWidth, rightWidth, topHeight, bottomHe
 	frameHeight := m.homeFrameHeight()
 	bodyHeight := frameHeight - 2
 	innerWidth := width - 2
-	leftWidth = max(28, min(38, innerWidth/3))
+	leftWidth = max(34, min(46, innerWidth*45/100))
 	rightWidth = innerWidth - leftWidth - 1
 	topHeight = max(6, (bodyHeight-1)/2)
 	bottomHeight = bodyHeight - topHeight - 1
 	return leftWidth, rightWidth, topHeight, bottomHeight
 }
 
-func (m model) homeRootItems() []list.Item {
+func (m model) homeRootItems(width int) []list.Item {
 	items := make([]list.Item, 0, len(m.status.Roots))
 	for _, root := range m.status.Roots {
-		items = append(items, homeListItem{title: fmt.Sprintf("%s  %s", homeShortPath(root.Path), root.Protection)})
+		items = append(items, homeListItem{title: m.homeRootListRow(root, width)})
 	}
 	if len(items) == 0 {
 		items = append(items, homeListItem{title: "No protected folders yet"})
@@ -645,7 +646,34 @@ func (m model) homeRootItems() []list.Item {
 	return items
 }
 
-func (m model) homeBackupItems() []list.Item {
+func (m model) homeRootListRow(root app.RootStatus, width int) string {
+	if width <= 0 {
+		width = 1
+	}
+	lastBackup := compactRootBackupTime(m.folderLastBackup(root))
+	status := m.homeRootSmartStatus(root)
+	statusWidth := max(10, lipgloss.Width(stripANSI(status)))
+	lastWidth := 10
+	pathWidth, _ := listRowColumnWidths(width, 8, lastWidth, statusWidth)
+	path := homePad(clipText(filepath.Base(filepath.Clean(root.Path)), pathWidth), pathWidth)
+	meta := homeCell(lastBackup, lastWidth) + "  " + homeCell(status, statusWidth)
+	return clipStyledText(path+"  "+meta, width)
+}
+
+func (m model) homeRootSmartStatus(root app.RootStatus) string {
+	if root.Kind == "missing" || root.Protection == "missing" {
+		return errorStyle.Render("missing")
+	}
+	if root.Snapshots == 0 {
+		return warnStyle.Render("not backed up")
+	}
+	if m.status.StorageMode == "distributed" {
+		return colorByStatus(root.Protection).Render(root.Protection)
+	}
+	return warnStyle.Render("local")
+}
+
+func (m model) homeBackupItems(width int) []list.Item {
 	snapshots := m.folderBackups()
 	items := make([]list.Item, 0, len(snapshots))
 	for i, snapshot := range snapshots {
@@ -653,12 +681,41 @@ func (m model) homeBackupItems() []list.Item {
 		if i == 0 {
 			label = "latest"
 		}
-		items = append(items, homeListItem{title: fmt.Sprintf("%-8s  %-12s  %s", label, compactSnapshotTime(snapshot.StartTime), formatBytes(snapshot.SizeBytes))})
+		items = append(items, homeListItem{title: homeBackupListRow(label, snapshot, width)})
 	}
 	if len(items) == 0 {
 		items = append(items, homeListItem{title: "No snapshots for selected root"})
 	}
 	return items
+}
+
+func homeBackupListRow(label string, snapshot app.Snapshot, width int) string {
+	if width <= 0 {
+		width = 1
+	}
+	started := compactSnapshotTime(snapshot.StartTime)
+	size := formatBytes(snapshot.SizeBytes)
+	startedWidth := 10
+	sizeWidth := max(10, lipgloss.Width(size))
+	labelWidth, _ := listRowColumnWidths(width, 1, startedWidth, sizeWidth)
+	row := homeCell(label, labelWidth) + "  " + homeCell(started, startedWidth) + "  " + homeCell(size, sizeWidth)
+	return homeTruncateStyled(row, width)
+}
+
+func listRowColumnWidths(width, minLeadingWidth int, trailingWidths ...int) (leadingWidth, trailingWidth int) {
+	if width <= 0 {
+		width = 1
+	}
+	for _, trailing := range trailingWidths {
+		trailingWidth += max(1, trailing)
+	}
+	gaps := 2 * len(trailingWidths)
+	trailingWidth += gaps
+	leadingWidth = width - trailingWidth
+	if leadingWidth < minLeadingWidth {
+		leadingWidth = max(1, width-trailingWidth)
+	}
+	return leadingWidth, trailingWidth
 }
 
 func (m model) homeView() string {
@@ -677,13 +734,7 @@ func (m model) homeView() string {
 }
 
 func (m model) homeFrame(width int) string {
-	frameHeight := m.homeFrameHeight()
-	bodyHeight := frameHeight - 2
-	innerWidth := width - 2
-	leftWidth := max(28, min(38, innerWidth/3))
-	rightWidth := innerWidth - leftWidth - 1
-	topHeight := max(6, (bodyHeight-1)/2)
-	bottomHeight := bodyHeight - topHeight - 1
+	leftWidth, rightWidth, topHeight, bottomHeight := m.homeLayout(width)
 
 	roots := m.homePaneView(homePaneRoots, "Roots", m.homeRoots.View(), leftWidth, topHeight, m.homeFocus == homeFocusRoots)
 	detail := m.homePaneView(homePaneDetails, m.homeDetailsTitle(), m.homeDetail.View(), rightWidth, topHeight, false)
@@ -856,7 +907,8 @@ func (m model) homeSelectedBackupRows(width int) []string {
 	rows = append(rows, homeMetricRows(width,
 		homeMetric{"Files", fmt.Sprintf("%d", snapshot.Files)},
 		homeMetric{"Dirs", fmt.Sprintf("%d", snapshot.Dirs)},
-		homeMetric{"Size", formatBytes(snapshot.SizeBytes)},
+		homeMetric{"Stored", formatBytes(snapshot.SizeBytes)},
+		homeMetric{"Logical", formatBytes(snapshot.LogicalSizeBytes)},
 	)...)
 	rows = append(rows, homeDetailField("Restore target", defaultRestoreTarget(snapshot.ID), width))
 	for i, row := range rows {
@@ -1101,7 +1153,10 @@ func (m model) homeOperationDetail(width int) string {
 	if parts[0] == "" {
 		parts[0] = "operation running"
 	}
-	parts = append(parts, fmt.Sprintf("%d%%", percent))
+	parts = append(parts, fmt.Sprintf("%s / %s", formatBytes(event.BytesDone), totalLabel(event.BytesTotal)))
+	if event.BytesTotal > 0 {
+		parts = append(parts, fmt.Sprintf("%d%%", percent))
+	}
 	if event.SpeedBps > 0 {
 		parts = append(parts, formatBytes(int64(event.SpeedBps))+"/s")
 	}
@@ -1228,7 +1283,8 @@ func (m model) homeBackupDetailRows(width int) []string {
 		"Contents",
 		fmt.Sprintf("Files: %d", snapshot.Files),
 		fmt.Sprintf("Directories: %d", snapshot.Dirs),
-		"Logical size: " + formatBytes(snapshot.SizeBytes),
+		"New storage: " + formatBytes(snapshot.SizeBytes),
+		"Logical size: " + formatBytes(snapshot.LogicalSizeBytes),
 		"",
 		"Restore",
 		"Default target: " + defaultRestoreTarget(snapshot.ID),
@@ -1691,6 +1747,33 @@ func homeTruncateStyled(value string, width int) string {
 	return middleTruncate(plain, width)
 }
 
+func clipText(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(value) <= width {
+		return value
+	}
+	var out strings.Builder
+	for _, r := range value {
+		if lipgloss.Width(out.String()+string(r)) > width {
+			break
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
+}
+
+func clipStyledText(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(value) <= width {
+		return value
+	}
+	return clipText(stripANSI(value), width)
+}
+
 func stripANSI(value string) string {
 	var out strings.Builder
 	for i := 0; i < len(value); i++ {
@@ -1759,6 +1842,14 @@ func compactSnapshotTime(value string) string {
 		return value[:16]
 	}
 	return middleTruncate(value, 12)
+}
+
+func compactRootBackupTime(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "never" {
+		return "never"
+	}
+	return clipText(compactSnapshotTime(value), 10)
 }
 
 func formatBytes(bytes int64) string {
