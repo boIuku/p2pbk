@@ -35,6 +35,40 @@ func (r *fakeRemoteRouter) FindPeers(ctx context.Context, _ string, _ int) (<-ch
 	return ch, nil
 }
 
+type sequenceRemoteRouter struct {
+	rounds          [][]peer.AddrInfo
+	blockFirstRound bool
+	calls           int
+}
+
+func (r *sequenceRemoteRouter) Advertise(context.Context, string, time.Duration) (time.Duration, error) {
+	return time.Minute, nil
+}
+
+func (r *sequenceRemoteRouter) FindPeers(ctx context.Context, _ string, _ int) (<-chan peer.AddrInfo, error) {
+	r.calls++
+	call := r.calls
+	round := call - 1
+	if round >= len(r.rounds) {
+		round = len(r.rounds) - 1
+	}
+	ch := make(chan peer.AddrInfo, len(r.rounds[round]))
+	go func() {
+		defer close(ch)
+		for _, info := range r.rounds[round] {
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- info:
+			}
+		}
+		if r.blockFirstRound && call == 1 {
+			<-ctx.Done()
+		}
+	}()
+	return ch, nil
+}
+
 type recordingPeerStore struct {
 	saved chan localdb.PeerRecord
 }
@@ -114,7 +148,7 @@ func TestRemoteDiscoverySkipsAdvertiseWhenRelayRequiredAndOnlyPrivateAddrs(t *te
 	defer h.Close()
 
 	router := &fakeRemoteRouter{}
-	runRemoteDiscoveryRound(ctx, h, router, "p2pbk/storage/v1", time.Minute, 10, &localNotifee{ctx: ctx, host: h}, PeerFilter{}, true)
+	runRemoteDiscoveryRound(ctx, h, router, "p2pbk/storage/v1", time.Minute, time.Second, 10, &localNotifee{ctx: ctx, host: h}, PeerFilter{}, true)
 	if router.advertised != 0 {
 		t.Fatalf("advertised = %d, want 0", router.advertised)
 	}
@@ -134,9 +168,61 @@ func TestRemoteDiscoveryAdvertisesWhenRelayAddressAvailable(t *testing.T) {
 	defer h.Close()
 
 	router := &fakeRemoteRouter{}
-	runRemoteDiscoveryRound(ctx, h, router, "p2pbk/storage/v1", time.Minute, 10, &localNotifee{ctx: ctx, host: h}, PeerFilter{}, true)
+	runRemoteDiscoveryRound(ctx, h, router, "p2pbk/storage/v1", time.Minute, time.Second, 10, &localNotifee{ctx: ctx, host: h}, PeerFilter{}, true)
 	if router.advertised != 1 {
 		t.Fatalf("advertised = %d, want 1", router.advertised)
+	}
+}
+
+func TestStartRemoteFindsPeerAddedAfterSlowLookup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h1, err := p2phost.New(ctx, p2phost.Options{ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"}})
+	if err != nil {
+		t.Fatalf("host 1 New returned error: %v", err)
+	}
+	defer h1.Close()
+	h2, err := p2phost.New(ctx, p2phost.Options{ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"}})
+	if err != nil {
+		t.Fatalf("host 2 New returned error: %v", err)
+	}
+	defer h2.Close()
+	h3, err := p2phost.New(ctx, p2phost.Options{ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"}})
+	if err != nil {
+		t.Fatalf("host 3 New returned error: %v", err)
+	}
+	defer h3.Close()
+
+	router := &sequenceRemoteRouter{
+		rounds: [][]peer.AddrInfo{
+			{addrInfoWithUsefulRemoteAddr(t, h2.ID(), h2.Addrs())},
+			{addrInfoWithUsefulRemoteAddr(t, h2.ID(), h2.Addrs()), addrInfoWithUsefulRemoteAddr(t, h3.ID(), h3.Addrs())},
+		},
+		blockFirstRound: true,
+	}
+	store := recordingPeerStore{saved: make(chan localdb.PeerRecord, 10)}
+	service, err := StartRemote(ctx, h1, store, router, "p2pbk/storage/v1",
+		WithRemoteInterval(20*time.Millisecond),
+		WithRemoteRoundTimeout(30*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("StartRemote returned error: %v", err)
+	}
+	defer service.Close()
+
+	deadline := time.After(2 * time.Second)
+	saved := map[string]struct{}{}
+	for {
+		select {
+		case record := <-store.saved:
+			saved[record.ID] = struct{}{}
+			if _, ok := saved[h3.ID().String()]; ok {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("newer peer %s was not saved; saved=%v calls=%d", h3.ID(), saved, router.calls)
+		}
 	}
 }
 
@@ -156,7 +242,7 @@ func TestRemoteDiscoveryFiltersIgnoredPeers(t *testing.T) {
 		ID:    ignored,
 		Addrs: []multiaddr.Multiaddr{mustMultiaddr(t, "/dns4/discovery.example.com/tcp/4001")},
 	}}}
-	runRemoteDiscoveryRound(ctx, h, router, "p2pbk/storage/v1", time.Minute, 10, &localNotifee{ctx: ctx, host: h, store: store}, NewPeerFilter([]peer.AddrInfo{{ID: ignored}}), false)
+	runRemoteDiscoveryRound(ctx, h, router, "p2pbk/storage/v1", time.Minute, time.Second, 10, &localNotifee{ctx: ctx, host: h, store: store}, NewPeerFilter([]peer.AddrInfo{{ID: ignored}}), false)
 
 	select {
 	case record := <-store.saved:
@@ -183,4 +269,11 @@ func mustMultiaddr(t *testing.T, raw string) multiaddr.Multiaddr {
 		t.Fatalf("NewMultiaddr(%q): %v", raw, err)
 	}
 	return addr
+}
+
+func addrInfoWithUsefulRemoteAddr(t *testing.T, id peer.ID, addrs []multiaddr.Multiaddr) peer.AddrInfo {
+	t.Helper()
+	out := append([]multiaddr.Multiaddr(nil), addrs...)
+	out = append(out, mustMultiaddr(t, "/dns4/example.com/tcp/4001"))
+	return peer.AddrInfo{ID: id, Addrs: out}
 }

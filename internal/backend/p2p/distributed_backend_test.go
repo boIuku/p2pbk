@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"sort"
+	"sync"
 	"testing"
 
 	"github.com/kopia/kopia/repo/blob"
@@ -38,7 +40,7 @@ func TestDistributedStorageRoundTripAcrossPeers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoundRobin returned error: %v", err)
 	}
-	backend, err := NewDistributedBackend(dispatcher.New(client), strategy, locator.NewMemory())
+	backend, err := NewDistributedBackend(dispatcher.New(client), strategy, newTestLocator())
 	if err != nil {
 		t.Fatalf("NewDistributedBackend returned error: %v", err)
 	}
@@ -81,7 +83,7 @@ func TestDistributedStorageRecordsPeerLocationsForEachShard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoundRobin returned error: %v", err)
 	}
-	loc := locator.NewMemory()
+	loc := newTestLocator()
 	backend, err := NewDistributedBackend(dispatcher.New(client), strategy, loc)
 	if err != nil {
 		t.Fatalf("NewDistributedBackend returned error: %v", err)
@@ -145,7 +147,7 @@ func TestDistributedStorageUpdatesAndDeletesPeerLocations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoundRobin returned error: %v", err)
 	}
-	loc := locator.NewMemory()
+	loc := newTestLocator()
 	backend, err := NewDistributedBackend(dispatcher.New(client), strategy, loc)
 	if err != nil {
 		t.Fatalf("NewDistributedBackend returned error: %v", err)
@@ -203,7 +205,7 @@ func TestDistributedStorageRecoversWhenOnePeerIsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoundRobin returned error: %v", err)
 	}
-	backend, err := NewDistributedBackend(dispatcher.New(client), strategy, locator.NewMemory())
+	backend, err := NewDistributedBackend(dispatcher.New(client), strategy, newTestLocator())
 	if err != nil {
 		t.Fatalf("NewDistributedBackend returned error: %v", err)
 	}
@@ -227,6 +229,42 @@ func TestDistributedStorageRecoversWhenOnePeerIsUnavailable(t *testing.T) {
 	if !bytes.Equal(out.bytes, input) {
 		t.Fatalf("output = %q, want %q", out.bytes, input)
 	}
+}
+
+type testLocator struct {
+	mu      sync.RWMutex
+	records map[string][]locator.Location
+}
+
+func newTestLocator() *testLocator {
+	return &testLocator{records: map[string][]locator.Location{}}
+}
+
+func (l *testLocator) Put(ctx context.Context, blobID string, locations []locator.Location) error {
+	copyLocations := append([]locator.Location(nil), locations...)
+	sort.Slice(copyLocations, func(i, j int) bool {
+		if copyLocations[i].Ref.Index == copyLocations[j].Ref.Index {
+			return copyLocations[i].Peer.String() < copyLocations[j].Peer.String()
+		}
+		return copyLocations[i].Ref.Index < copyLocations[j].Ref.Index
+	})
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.records[blobID] = copyLocations
+	return nil
+}
+
+func (l *testLocator) Get(ctx context.Context, blobID string) ([]locator.Location, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return append([]locator.Location(nil), l.records[blobID]...), nil
+}
+
+func (l *testLocator) Delete(ctx context.Context, blobID string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.records, blobID)
+	return nil
 }
 
 func startBlobPeers(t *testing.T, ctx context.Context, client corehost.Host, count int) []corehost.Host {

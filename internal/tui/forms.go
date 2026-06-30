@@ -238,6 +238,7 @@ func (m *model) submitForm(form *formState) tea.Cmd {
 				return actionMsg{err: fmt.Errorf("p2pbk password is required")}
 			}
 		}
+		m.repoDetailsRequested = true
 		pending := m.pending
 		m.pending = nil
 		if pending == nil {

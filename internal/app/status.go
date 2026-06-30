@@ -74,6 +74,14 @@ type Status struct {
 }
 
 func CollectStatus(ctx context.Context, cfg config.Config, configPath, password string) (Status, error) {
+	return collectStatus(ctx, cfg, configPath, password, false)
+}
+
+func CollectFastStatus(ctx context.Context, cfg config.Config, configPath, password string) (Status, error) {
+	return collectStatus(ctx, cfg, configPath, password, true)
+}
+
+func collectStatus(ctx context.Context, cfg config.Config, configPath, password string, skipSnapshotList bool) (Status, error) {
 	paths, err := cfg.Paths()
 	if err != nil {
 		return Status{}, err
@@ -103,23 +111,12 @@ func CollectStatus(ctx context.Context, cfg config.Config, configPath, password 
 		status.Repository = "initialized"
 		if password == "" {
 			status.RepositoryError = "p2pbk password required to list backups"
-		} else {
+		} else if !skipSnapshotList {
 			snapshots, err := engine.ListSnapshots(ctx)
 			if err != nil {
 				status.RepositoryError = err.Error()
 			} else {
-				for _, snapshot := range snapshots {
-					status.Snapshots = append(status.Snapshots, Snapshot{
-						ID:               string(snapshot.ID),
-						Source:           fmt.Sprint(snapshot.Source),
-						Description:      snapshot.Description,
-						StartTime:        snapshot.StartTime,
-						Files:            int(snapshot.Stats.TotalFileCount),
-						Dirs:             int(snapshot.Stats.TotalDirectoryCount),
-						SizeBytes:        snapshot.StorageBytes,
-						LogicalSizeBytes: snapshot.Stats.TotalFileSize,
-					})
-				}
+				status.Snapshots = appSnapshots(snapshots)
 			}
 		}
 	}
@@ -177,6 +174,51 @@ func CollectStatus(ctx context.Context, cfg config.Config, configPath, password 
 	}
 
 	return status, nil
+}
+
+func LoadRepositoryDetails(ctx context.Context, cfg config.Config, configPath, password string) ([]Snapshot, MaintenanceStatus, error) {
+	engine, err := existingEngine(cfg, configPath, password)
+	if err != nil {
+		return nil, MaintenanceStatus{}, err
+	}
+	snapshotInfos, err := engine.ListSnapshots(ctx)
+	if err != nil {
+		return nil, MaintenanceStatus{}, friendlyRepositoryError(err)
+	}
+	maint, _ := GetMaintenanceStatus(ctx, cfg, configPath, password)
+	return appSnapshots(snapshotInfos), maint, nil
+}
+
+func ApplySnapshots(status *Status, snapshots []Snapshot) {
+	status.Snapshots = append([]Snapshot(nil), snapshots...)
+	healthyPeers := 0
+	for _, peer := range status.Peers {
+		if peer.Status == "healthy" {
+			healthyPeers++
+		}
+	}
+	for i := range status.Roots {
+		status.Roots[i].Snapshots = countSnapshots(status.Snapshots, status.Roots[i].Path)
+		status.Roots[i].Protection = protection(*status, status.Roots[i].Path, healthyPeers)
+		status.Roots[i].ProtectionNote = protectionNote(*status, healthyPeers)
+	}
+}
+
+func appSnapshots(snapshots []kopiaengine.SnapshotInfo) []Snapshot {
+	out := make([]Snapshot, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		out = append(out, Snapshot{
+			ID:               string(snapshot.ID),
+			Source:           fmt.Sprint(snapshot.Source),
+			Description:      snapshot.Description,
+			StartTime:        snapshot.StartTime,
+			Files:            int(snapshot.Stats.TotalFileCount),
+			Dirs:             int(snapshot.Stats.TotalDirectoryCount),
+			SizeBytes:        snapshot.StorageBytes,
+			LogicalSizeBytes: snapshot.Stats.TotalFileSize,
+		})
+	}
+	return out
 }
 
 func backupHistory(db *localdb.DB, roots []string) (map[string]string, map[string]string) {

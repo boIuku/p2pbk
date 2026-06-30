@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/kopia/kopia/repo/blob"
@@ -38,7 +39,7 @@ func TestOpenDistributedStorageWithLocatorUsesConfiguredPeers(t *testing.T) {
 	cfg.Backup.DataShards = 2
 	cfg.Backup.ParityShards = 1
 
-	st, peers, err := OpenDistributedStorageWithLocator(ctx, cfg, client, locator.NewMemory())
+	st, peers, err := OpenDistributedStorageWithLocator(ctx, cfg, client, newTestLocator())
 	if err != nil {
 		t.Fatalf("OpenDistributedStorageWithLocator returned error: %v", err)
 	}
@@ -58,6 +59,35 @@ func TestOpenDistributedStorageWithLocatorUsesConfiguredPeers(t *testing.T) {
 	if !bytes.Equal(out.bytes, input) {
 		t.Fatalf("output = %q, want %q", out.bytes, input)
 	}
+}
+
+type testLocator struct {
+	mu      sync.RWMutex
+	records map[string][]locator.Location
+}
+
+func newTestLocator() *testLocator {
+	return &testLocator{records: map[string][]locator.Location{}}
+}
+
+func (l *testLocator) Put(ctx context.Context, blobID string, locations []locator.Location) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.records[blobID] = append([]locator.Location(nil), locations...)
+	return nil
+}
+
+func (l *testLocator) Get(ctx context.Context, blobID string) ([]locator.Location, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return append([]locator.Location(nil), l.records[blobID]...), nil
+}
+
+func (l *testLocator) Delete(ctx context.Context, blobID string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.records, blobID)
+	return nil
 }
 
 func TestShouldUseDistributedStorageWithSavedPeers(t *testing.T) {

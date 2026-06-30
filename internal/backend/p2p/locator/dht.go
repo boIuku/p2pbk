@@ -36,8 +36,7 @@ func NewDHT(router ValueRouter, signer *identity.Identity, verifyPK ed25519.Publ
 }
 
 func (d *DHT) Put(ctx context.Context, blobID string, locations []Location) error {
-	p := &Persistent{signer: d.signer}
-	record, err := p.sign(blobID, locations)
+	record, err := signRecord(d.signer, blobID, locations)
 	if err != nil {
 		return err
 	}

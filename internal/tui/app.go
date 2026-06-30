@@ -52,10 +52,12 @@ type model struct {
 	configPath string
 	password   string
 
-	status  app.Status
-	maint   app.MaintenanceStatus
-	daemon  app.DaemonStatus
-	summary app.ConfigSummary
+	status               app.Status
+	maint                app.MaintenanceStatus
+	daemon               app.DaemonStatus
+	summary              app.ConfigSummary
+	repoDetailsLoading   bool
+	repoDetailsRequested bool
 
 	homeFocus    int
 	homeMode     int
@@ -113,6 +115,12 @@ type statusMsg struct {
 	daemon  app.DaemonStatus
 	summary app.ConfigSummary
 	err     error
+}
+
+type repoDetailsMsg struct {
+	snapshots []app.Snapshot
+	maint     app.MaintenanceStatus
+	err       error
 }
 
 type actionMsg struct {
@@ -329,6 +337,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.summary = msg.summary
 		m.err = msg.err
 		m.folderIndex = min(m.folderIndex, max(0, len(m.status.Roots)-1))
+		m.folderBackup = min(m.folderBackup, max(0, len(m.folderBackups())-1))
+		m.syncHomeComponents()
+		if m.repoDetailsRequested && m.password != "" && m.status.Repository == "initialized" {
+			m.repoDetailsRequested = false
+			m.repoDetailsLoading = true
+			return m, fetchRepositoryDetails(m.cfg, m.configPath, m.password)
+		}
+		if m.repoDetailsRequested {
+			m.repoDetailsRequested = false
+			m.repoDetailsLoading = false
+		}
+	case repoDetailsMsg:
+		m.repoDetailsLoading = false
+		if msg.err != nil {
+			m.status.RepositoryError = msg.err.Error()
+		} else {
+			app.ApplySnapshots(&m.status, msg.snapshots)
+			m.maint = msg.maint
+			m.status.RepositoryError = ""
+		}
 		m.folderBackup = min(m.folderBackup, max(0, len(m.folderBackups())-1))
 		m.syncHomeComponents()
 	case actionMsg:
@@ -654,7 +682,7 @@ func (m model) homeRootListRow(root app.RootStatus, width int) string {
 	status := m.homeRootSmartStatus(root)
 	statusWidth := max(10, lipgloss.Width(stripANSI(status)))
 	lastWidth := 10
-	pathWidth, _ := listRowColumnWidths(width, 8, lastWidth, statusWidth)
+	pathWidth, _ := listRowColumnWidths(width, 10, lastWidth, statusWidth)
 	path := homePad(clipText(filepath.Base(filepath.Clean(root.Path)), pathWidth), pathWidth)
 	meta := homeCell(lastBackup, lastWidth) + "  " + homeCell(status, statusWidth)
 	return clipStyledText(path+"  "+meta, width)
@@ -684,7 +712,11 @@ func (m model) homeBackupItems(width int) []list.Item {
 		items = append(items, homeListItem{title: homeBackupListRow(label, snapshot, width)})
 	}
 	if len(items) == 0 {
-		items = append(items, homeListItem{title: "No snapshots for selected root"})
+		if m.repoDetailsLoading {
+			items = append(items, homeListItem{title: "Calculating snapshots..."})
+		} else {
+			items = append(items, homeListItem{title: "No snapshots for selected root"})
+		}
 	}
 	return items
 }
@@ -865,13 +897,15 @@ func (m model) homeSelectedRootRows(width int) []string {
 	lastBackup := "never"
 	if latest.ID != "" {
 		lastBackup = firstNonEmpty(compactSnapshotTime(latest.StartTime), latest.StartTime)
+	} else if m.repoDetailsLoading {
+		lastBackup = "calculating"
 	}
 	rows := []string{
 		homeDetailField("Root", homeShortPath(root.Path), width),
 		homeDetailField("Last backup", lastBackup, width),
 	}
 	rows = append(rows, homeMetricRows(width,
-		homeMetric{"Snapshots", fmt.Sprintf("%d", root.Snapshots)},
+		homeMetric{"Snapshots", m.rootSnapshotLabel(root)},
 		homeMetric{"Size", formatBytes(root.SizeBytes)},
 		homeMetric{"Protection", colorByStatus(root.Protection).Render(root.Protection)},
 		homeMetric{"Peers", m.homePeerCountLabel()},
@@ -893,6 +927,12 @@ func (m model) homeSelectedRootRows(width int) []string {
 func (m model) homeSelectedBackupRows(width int) []string {
 	snapshot := m.selectedHomeSnapshot()
 	if snapshot.ID == "" {
+		if m.repoDetailsLoading {
+			return []string{
+				homeMutedStyle.Render("Calculating backups..."),
+				homeMutedStyle.Render("Repository details are loading in the background."),
+			}
+		}
 		return []string{
 			homeMutedStyle.Render("No backup selected."),
 			homeMutedStyle.Render("Select a root with snapshots first."),
@@ -1121,6 +1161,9 @@ func (m model) homePeerCountLabel() string {
 }
 
 func (m model) homeRepoLabel() string {
+	if m.repoDetailsLoading {
+		return "updating"
+	}
 	if m.status.Repository == "initialized" && m.status.RepositoryError == "" {
 		return "ok"
 	}
@@ -1251,7 +1294,7 @@ func (m model) homeRootDetailRows(width int) []string {
 		"",
 		"Path exists: " + boolWord(root.Kind != "missing", "yes", "no"),
 		"Kind: " + root.Kind,
-		fmt.Sprintf("Snapshots: %d", root.Snapshots),
+		"Snapshots: " + m.rootSnapshotLabel(root),
 		"Latest backup: " + m.folderLastBackup(root),
 		"Size: " + formatBytes(root.SizeBytes),
 		"Last success: " + firstNonEmpty(root.LastSuccess, "none"),
@@ -1506,11 +1549,21 @@ func (m model) selectedHomeSnapshot() app.Snapshot {
 }
 
 func (m model) nextMaintenanceLabel() string {
+	if m.repoDetailsLoading {
+		return "calculating"
+	}
 	next := formatTime(m.maint.NextQuick)
 	if next == "unknown" {
 		next = formatTime(m.maint.NextFull)
 	}
 	return next
+}
+
+func (m model) rootSnapshotLabel(root app.RootStatus) string {
+	if m.repoDetailsLoading && root.Snapshots == 0 {
+		return "calculating"
+	}
+	return fmt.Sprintf("%d", root.Snapshots)
 }
 
 func backupStoreLabel(status string) string {
@@ -1608,22 +1661,26 @@ func (m *model) openAddFolder() {
 
 func fetchStatus(cfg config.Config, configPath, password string) tea.Cmd {
 	return func() tea.Msg {
-		status, err := app.CollectStatus(context.Background(), cfg, configPath, password)
+		status, err := app.CollectFastStatus(context.Background(), cfg, configPath, password)
 		summary, summaryErr := app.SummarizeConfig(cfg, configPath)
 		if err == nil {
 			err = summaryErr
 		}
-		var maint app.MaintenanceStatus
-		if password != "" && status.Repository == "initialized" {
-			maint, _ = app.GetMaintenanceStatus(context.Background(), cfg, configPath, password)
-		}
 		return statusMsg{
 			status:  status,
-			maint:   maint,
 			daemon:  app.CheckDaemonStatus(context.Background(), cfg, configPath),
 			summary: summary,
 			err:     err,
 		}
+	}
+}
+
+func fetchRepositoryDetails(cfg config.Config, configPath, password string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		snapshots, maint, err := app.LoadRepositoryDetails(ctx, cfg, configPath, password)
+		return repoDetailsMsg{snapshots: snapshots, maint: maint, err: err}
 	}
 }
 

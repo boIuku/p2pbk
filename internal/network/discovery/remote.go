@@ -27,6 +27,7 @@ type RemoteService struct {
 type remoteOptions struct {
 	observer     func(Event)
 	interval     time.Duration
+	roundTimeout time.Duration
 	limit        int
 	filter       PeerFilter
 	requireRelay bool
@@ -43,6 +44,12 @@ func WithRemoteObserver(observer func(Event)) RemoteOption {
 func WithRemoteInterval(interval time.Duration) RemoteOption {
 	return func(opts *remoteOptions) {
 		opts.interval = interval
+	}
+}
+
+func WithRemoteRoundTimeout(timeout time.Duration) RemoteOption {
+	return func(opts *remoteOptions) {
+		opts.roundTimeout = timeout
 	}
 }
 
@@ -85,6 +92,12 @@ func StartRemote(ctx context.Context, h corehost.Host, store PeerStore, router R
 	if options.interval <= 0 {
 		return nil, fmt.Errorf("remote discovery interval must be positive")
 	}
+	if options.roundTimeout <= 0 {
+		options.roundTimeout = options.interval
+		if options.roundTimeout > 30*time.Second {
+			options.roundTimeout = 30 * time.Second
+		}
+	}
 	if options.limit <= 0 {
 		options.limit = defaultRemoteDiscoveryLimit
 	}
@@ -98,13 +111,13 @@ func StartRemote(ctx context.Context, h corehost.Host, store PeerStore, router R
 		defer service.wg.Done()
 		ticker := time.NewTicker(options.interval)
 		defer ticker.Stop()
-		runRemoteDiscoveryRound(remoteCtx, h, router, namespace, options.interval, options.limit, notifee, options.filter, options.requireRelay)
+		runRemoteDiscoveryRound(remoteCtx, h, router, namespace, options.interval, options.roundTimeout, options.limit, notifee, options.filter, options.requireRelay)
 		for {
 			select {
 			case <-remoteCtx.Done():
 				return
 			case <-ticker.C:
-				runRemoteDiscoveryRound(remoteCtx, h, router, namespace, options.interval, options.limit, notifee, options.filter, options.requireRelay)
+				runRemoteDiscoveryRound(remoteCtx, h, router, namespace, options.interval, options.roundTimeout, options.limit, notifee, options.filter, options.requireRelay)
 			}
 		}
 	}()
@@ -126,20 +139,26 @@ func (s *RemoteService) Close() error {
 	return nil
 }
 
-func runRemoteDiscoveryRound(ctx context.Context, h corehost.Host, router RemoteRouter, namespace string, interval time.Duration, limit int, notifee *localNotifee, filter PeerFilter, requireRelay bool) {
+func runRemoteDiscoveryRound(ctx context.Context, h corehost.Host, router RemoteRouter, namespace string, interval, roundTimeout time.Duration, limit int, notifee *localNotifee, filter PeerFilter, requireRelay bool) {
 	if ctx.Err() != nil {
 		return
 	}
-	if readyForRemoteAdvertise(h.Addrs(), requireRelay) {
-		_, _ = router.Advertise(ctx, namespace, interval*2)
+	roundCtx := ctx
+	cancel := func() {}
+	if roundTimeout > 0 {
+		roundCtx, cancel = context.WithTimeout(ctx, roundTimeout)
 	}
-	peers, err := router.FindPeers(ctx, namespace, limit)
+	defer cancel()
+	if readyForRemoteAdvertise(h.Addrs(), requireRelay) {
+		_, _ = router.Advertise(roundCtx, namespace, interval*2)
+	}
+	peers, err := router.FindPeers(roundCtx, namespace, limit)
 	if err != nil {
 		notifee.emit(Event{Type: EventConnectFailed, Source: "remote-discovery", Err: err})
 		return
 	}
 	for info := range peers {
-		if ctx.Err() != nil {
+		if roundCtx.Err() != nil {
 			return
 		}
 		if info.ID == h.ID() || filter.Ignored(info.ID) || !hasUsefulRemoteAddr(info.Addrs, requireRelay) {
