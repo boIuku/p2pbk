@@ -12,7 +12,6 @@ import (
 	"p2pbk/internal/config"
 	p2phost "p2pbk/internal/network/host"
 	"p2pbk/internal/peer/blobserver"
-	"p2pbk/internal/peer/localdb"
 	"p2pbk/internal/trust/identity"
 )
 
@@ -57,9 +56,6 @@ func ShouldUseDistributedStorage(cfg config.Config) (bool, error) {
 	}
 	store, closeStore, err := openPeerStore(cfg)
 	if err != nil {
-		if localdb.IsOpenTimeout(err) {
-			return false, nil
-		}
 		return false, err
 	}
 	defer closeStore()

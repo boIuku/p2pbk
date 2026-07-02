@@ -64,10 +64,6 @@ func openSQLite(path string) (*DB, error) {
 	return &DB{conn: conn, path: path}, nil
 }
 
-func IsOpenTimeout(error) bool {
-	return false
-}
-
 func (db *DB) Close() error {
 	if db == nil || db.conn == nil {
 		return nil

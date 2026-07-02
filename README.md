@@ -314,17 +314,16 @@ Run the Go test suite:
 go test ./...
 ```
 
-Docker integration tests are driven from Go and skipped by default:
+Docker integration tests are driven from Go and run whenever the integration
+package is tested. Make sure Docker is running first:
 
 ```powershell
-$env:P2PBK_DOCKER_E2E="1"
-go test ./test/integration -run TestDockerE2EBackupRestore -v
+go test ./test/integration -run TestDocker -v
 ```
 
 To print container logs even when the test passes:
 
 ```powershell
-$env:P2PBK_DOCKER_E2E="1"
 $env:P2PBK_DOCKER_E2E_LOGS="1"
-go test ./test/integration -run TestDockerE2EBackupRestore -v
+go test ./test/integration -run TestDocker -v
 ```

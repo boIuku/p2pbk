@@ -150,8 +150,6 @@ func collectStatus(ctx context.Context, cfg config.Config, configPath, password 
 			status.AuditCount = len(audits)
 		}
 		_ = db.Close()
-	} else if localdb.IsOpenTimeout(err) {
-		status.LocalDBStatus = "busy; daemon is using it"
 	} else {
 		status.LocalDBStatus = "unavailable: " + err.Error()
 	}

@@ -41,6 +41,8 @@ const (
 	EventSaveFailed    EventType = "save_failed"
 )
 
+const connectTimeout = 5 * time.Second
+
 type Event struct {
 	Type   EventType
 	PeerID string
@@ -71,14 +73,6 @@ func (f PeerFilter) Ignored(id peer.ID) bool {
 	return ok
 }
 
-func (f PeerFilter) IDs() []peer.ID {
-	out := make([]peer.ID, 0, len(f.ignored))
-	for id := range f.ignored {
-		out = append(out, id)
-	}
-	return out
-}
-
 type connectOptions struct {
 	filter PeerFilter
 }
@@ -101,10 +95,6 @@ func WithObserver(observer func(Event)) LocalOption {
 	return func(opts *localOptions) {
 		opts.observer = observer
 	}
-}
-
-func StartLocal(ctx context.Context, h corehost.Host, store PeerStore, serviceName string) (*LocalService, error) {
-	return StartLocalWithOptions(ctx, h, store, serviceName)
 }
 
 func StartLocalWithOptions(ctx context.Context, h corehost.Host, store PeerStore, serviceName string, opts ...LocalOption) (*LocalService, error) {
@@ -299,7 +289,10 @@ func ConnectConfiguredAndSaved(ctx context.Context, h corehost.Host, configured 
 		if info.ID == h.ID() || options.filter.Ignored(info.ID) {
 			continue
 		}
-		if err := p2phost.Connect(ctx, h, info); err != nil {
+		connectCtx, cancel := context.WithTimeout(ctx, connectTimeout)
+		err = p2phost.Connect(connectCtx, h, info)
+		cancel()
+		if err != nil {
 			if store != nil {
 				_ = store.RecordPeerFailure(info.ID.String(), time.Now().UTC())
 			}
@@ -369,7 +362,10 @@ func (n *localNotifee) handlePeerFound(info peer.AddrInfo, source string) {
 		return
 	}
 	n.emit(Event{Type: EventFound, PeerID: info.ID.String(), Addrs: addrStrings(info), Source: source})
-	if err := p2phost.Connect(n.ctx, n.host, info); err != nil {
+	connectCtx, cancel := context.WithTimeout(n.ctx, connectTimeout)
+	err := p2phost.Connect(connectCtx, n.host, info)
+	cancel()
+	if err != nil {
 		if n.store != nil {
 			_ = n.store.RecordPeerFailure(info.ID.String(), time.Now().UTC())
 		}

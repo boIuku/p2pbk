@@ -77,33 +77,6 @@ func (db *DB) UpsertPeer(record PeerRecord) error {
 	return tx.Commit()
 }
 
-func (db *DB) RecordPeerSuccess(peerID string, at time.Time) error {
-	if peerID == "" {
-		return errors.New("peer id is required")
-	}
-	if at.IsZero() {
-		at = time.Now().UTC()
-	}
-	return db.updatePeer(peerID, func(record *PeerRecord) {
-		record.LastSeen = at.UTC()
-		record.LastSuccess = at.UTC()
-	})
-}
-
-func (db *DB) IncrementStoredShards(peerID string, delta int) error {
-	if peerID == "" {
-		return errors.New("peer id is required")
-	}
-	now := time.Now().UTC()
-	return db.updatePeer(peerID, func(record *PeerRecord) {
-		record.LastSeen = now
-		record.StoredShards += delta
-		if record.StoredShards < 0 {
-			record.StoredShards = 0
-		}
-	})
-}
-
 func (db *DB) ListPeers() ([]PeerRecord, error) {
 	rows, err := db.conn.Query(`SELECT data FROM peers ORDER BY last_seen DESC, id ASC`)
 	if err != nil {

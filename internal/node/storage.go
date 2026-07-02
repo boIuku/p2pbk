@@ -35,11 +35,7 @@ func OpenDistributedStorage(ctx context.Context, cfg config.Config, h corehost.H
 	}
 	store, closeStore, err := openPeerStore(cfg)
 	if err != nil {
-		if !localdb.IsOpenTimeout(err) {
-			return nil, err
-		}
-		store = nil
-		closeStore = func() {}
+		return nil, err
 	}
 
 	infrastructureFilter, err := publicDiscoveryFilter(cfg)
@@ -94,11 +90,7 @@ func OpenDistributedStorageWithLocator(ctx context.Context, cfg config.Config, h
 
 	store, closeStore, err := openPeerStore(cfg)
 	if err != nil {
-		if !localdb.IsOpenTimeout(err) {
-			return nil, nil, err
-		}
-		store = nil
-		closeStore = func() {}
+		return nil, nil, err
 	}
 	defer closeStore()
 

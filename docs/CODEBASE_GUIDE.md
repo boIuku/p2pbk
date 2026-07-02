@@ -102,7 +102,7 @@ flowchart TD
 | `internal/scheduler` | Daemon backup scheduler. | `scheduler.go` |
 | `internal/tui` | Bubble Tea terminal UI. | `app.go`, `forms.go` |
 | `internal/secrets` | Repository password environment helper. | `password.go` |
-| `test/integration` | In-process and Docker integration tests. | `e2e_test.go`, `docker_e2e_test.go` |
+| `test/integration` | In-process and Docker integration tests. | `e2e_test.go`, `docker_*_test.go` |
 | `deploy/docker` | Dockerfiles and compose example. | `Dockerfile`, `compose.yaml` |
 | `docs` | Human-facing docs. | `DEPLOYMENT.md`, this file |
 
@@ -1503,8 +1503,9 @@ Unit tests cover:
 Integration tests:
 
 - `test/integration/e2e_test.go`: in-process distributed storage round trip.
-- `test/integration/docker_e2e_test.go`: Docker backup/restore and degraded
-  restore after one node loss.
+- `test/integration/docker_harness_test.go`: shared Docker cluster harness.
+- `test/integration/docker_*_test.go`: Docker scenarios split by backup,
+  restore, storage, networking, and discovery mode behavior.
 
 ### How to run tests
 
@@ -1512,19 +1513,18 @@ Integration tests:
 go test ./...
 ```
 
-Docker e2e tests are opt-in:
+Docker e2e tests run whenever the integration package is tested. Make sure
+Docker is running first:
 
 ```powershell
-$env:P2PBK_DOCKER_E2E="1"
-go test ./test/integration -run TestDockerE2EBackupRestore -v
+go test ./test/integration -run TestDocker -v
 ```
 
 With logs:
 
 ```powershell
-$env:P2PBK_DOCKER_E2E="1"
 $env:P2PBK_DOCKER_E2E_LOGS="1"
-go test ./test/integration -run TestDockerE2EBackupRestore -v
+go test ./test/integration -run TestDocker -v
 ```
 
 ### What appears under-tested
@@ -1616,8 +1616,7 @@ needs storage, jump to `provider.go` and then `internal/node`.
 Fastest path is Docker e2e:
 
 ```powershell
-$env:P2PBK_DOCKER_E2E="1"
-go test ./test/integration -run TestDockerE2EBackupRestore -v
+go test ./test/integration -run TestDocker -v
 ```
 
 For in-process logic, read `test/integration/e2e_test.go`; it starts libp2p

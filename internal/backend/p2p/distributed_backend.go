@@ -13,6 +13,8 @@ import (
 	"p2pbk/internal/trust/receipts"
 )
 
+const shardFetchTimeout = 5 * time.Second
+
 type DistributedBackend struct {
 	dispatcher *dispatcher.Dispatcher
 	placement  placement.Strategy
@@ -99,7 +101,9 @@ func (b *DistributedBackend) GetShard(ctx context.Context, req blobserver.GetSha
 
 	var lastErr error
 	for _, loc := range locator.FilterByRef(locations, req.Ref) {
-		got, err := b.dispatcher.GetShard(ctx, loc.Peer, req)
+		fetchCtx, cancel := context.WithTimeout(ctx, shardFetchTimeout)
+		got, err := b.dispatcher.GetShard(fetchCtx, loc.Peer, req)
+		cancel()
 		if err == nil {
 			return got, nil
 		}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	corehost "github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -52,26 +51,4 @@ func (d *Dispatcher) DeleteShard(ctx context.Context, target peer.ID, req blobse
 		return blobserver.DeleteShardResponse{}, fmt.Errorf("delete shard on %s: %w", target, err)
 	}
 	return out, nil
-}
-
-func (d *Dispatcher) PutShards(ctx context.Context, targets map[peer.ID]blobserver.PutShardRequest) []UploadResult {
-	results := make([]UploadResult, 0, len(targets))
-	resultCh := make(chan UploadResult, len(targets))
-
-	var wg sync.WaitGroup
-	for target, req := range targets {
-		wg.Add(1)
-		go func(target peer.ID, req blobserver.PutShardRequest) {
-			defer wg.Done()
-			_, err := d.PutShard(ctx, target, req)
-			resultCh <- UploadResult{Peer: target, Ref: req.Ref, Err: err}
-		}(target, req)
-	}
-
-	wg.Wait()
-	close(resultCh)
-	for result := range resultCh {
-		results = append(results, result)
-	}
-	return results
 }

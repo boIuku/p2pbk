@@ -88,14 +88,6 @@ func (d *DHT) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
-func (d *DHT) FindPeer(ctx context.Context, id peer.ID) (peer.AddrInfo, error) {
-	info, err := d.inner.FindPeer(ctx, id)
-	if err != nil {
-		return peer.AddrInfo{}, fmt.Errorf("find peer %s: %w", id, err)
-	}
-	return info, nil
-}
-
 func (d *DHT) PutValue(ctx context.Context, key string, value []byte) error {
 	if err := d.inner.PutValue(ctx, key, value); err != nil {
 		return fmt.Errorf("put dht value %q: %w", key, err)
