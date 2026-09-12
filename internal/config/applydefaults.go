@@ -21,6 +21,7 @@ func applyDefaults(v *viper.Viper) {
 	v.SetDefault("storage.cache_dir", defaultDataDir+"/cache")
 	v.SetDefault("storage.cache_size_bytes", int64(1<<30))
 	v.SetDefault("storage.offer_bytes", int64(10<<30))
+	v.SetDefault("storage.mode", "auto")
 
 	v.SetDefault("network.listen_addrs", []string{"/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic-v1"})
 	v.SetDefault("network.bootstrap_peers", []string{})

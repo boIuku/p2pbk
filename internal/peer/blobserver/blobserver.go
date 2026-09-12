@@ -7,8 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"os"
+	"p2pbk/internal/durable"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"p2pbk/internal/network/wire"
@@ -18,18 +22,27 @@ import (
 )
 
 const (
-	MethodPutShard    = "blobserver.put_shard"
-	MethodGetShard    = "blobserver.get_shard"
-	MethodDeleteShard = "blobserver.delete_shard"
+	MethodCapabilities = "blobserver.capabilities"
+	MethodPutShard     = "blobserver.put_shard"
+	MethodGetShard     = "blobserver.get_shard"
+	MethodDeleteShard  = "blobserver.delete_shard"
 )
 
 var ErrShardNotFound = errors.New("shard not found")
+var ErrUnauthorized = errors.New("shard owner is not the authenticated peer")
+
+type Capabilities struct {
+	Writable       bool  `json:"writable"`
+	AvailableBytes int64 `json:"available_bytes"`
+}
 
 type Server struct {
-	root     string
-	quota    *quota.Manager
-	identity *identity.Identity
-	peerID   string
+	writeFile func(string, []byte, os.FileMode) error
+	mu        sync.Mutex
+	root      string
+	quota     *quota.Manager
+	identity  *identity.Identity
+	peerID    string
 }
 
 type PutShardRequest struct {
@@ -81,7 +94,40 @@ func NewWithOptions(root string, options Options) (*Server, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("create blobserver root: %w", err)
 	}
-	return &Server{root: root, quota: options.Quota, identity: options.Identity, peerID: options.PeerID}, nil
+	s := &Server{root: root, quota: options.Quota, identity: options.Identity, peerID: options.PeerID, writeFile: durable.WriteFile}
+	if s.quota != nil {
+		used := map[string]int64{}
+		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || !strings.HasSuffix(d.Name(), ".shard") {
+				return nil
+			}
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			parts := strings.Split(rel, string(filepath.Separator))
+			if len(parts) != 3 {
+				return fmt.Errorf("unexpected shard path %s", rel)
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("non-regular shard %s", rel)
+			}
+			used[parts[0]] += info.Size()
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		s.quota.Restore(used)
+	}
+	return s, nil
 }
 
 func Hash(data []byte) string {
@@ -90,6 +136,11 @@ func Hash(data []byte) string {
 }
 
 func (s *Server) PutShard(ctx context.Context, req PutShardRequest) (PutShardResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return PutShardResponse{}, err
+	}
 	if err := req.Ref.Validate(); err != nil {
 		return PutShardResponse{}, err
 	}
@@ -124,7 +175,7 @@ func (s *Server) PutShard(ctx context.Context, req PutShardRequest) (PutShardRes
 		}
 		return PutShardResponse{}, fmt.Errorf("create shard directory: %w", err)
 	}
-	if err := os.WriteFile(path, req.Data, 0o600); err != nil {
+	if err := s.writeFile(path, req.Data, 0o600); err != nil {
 		if s.quota != nil && delta > 0 {
 			s.quota.Release(req.Ref.Owner, delta)
 		}
@@ -134,7 +185,13 @@ func (s *Server) PutShard(ctx context.Context, req PutShardRequest) (PutShardRes
 		s.quota.Release(req.Ref.Owner, -delta)
 	}
 
-	receipt, err := s.issueReceipt(req.Ref, req.Hash)
+	var receipt receipts.Receipt
+	if key := wire.LocalKey(ctx); key != nil {
+		pid, _ := peer.IDFromPrivateKey(key)
+		receipt, err = receipts.IssueWithKey(key, receiptRef(req.Ref), req.Hash, pid.String(), time.Now().UTC())
+	} else {
+		receipt, err = s.issueReceipt(req.Ref, req.Hash)
+	}
 	if err != nil {
 		return PutShardResponse{}, err
 	}
@@ -142,6 +199,8 @@ func (s *Server) PutShard(ctx context.Context, req PutShardRequest) (PutShardRes
 }
 
 func (s *Server) GetShard(ctx context.Context, req GetShardRequest) (GetShardResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	path, err := ShardPath(s.root, req.Ref)
 	if err != nil {
 		return GetShardResponse{}, err
@@ -157,6 +216,8 @@ func (s *Server) GetShard(ctx context.Context, req GetShardRequest) (GetShardRes
 }
 
 func (s *Server) DeleteShard(ctx context.Context, req DeleteShardRequest) (DeleteShardResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	path, err := ShardPath(s.root, req.Ref)
 	if err != nil {
 		return DeleteShardResponse{}, err
@@ -179,6 +240,13 @@ func (s *Server) DeleteShard(ctx context.Context, req DeleteShardRequest) (Delet
 }
 
 func (s *Server) Register(router *wire.Router) {
+	router.Handle(MethodCapabilities, func(ctx context.Context, req wire.Request) (wire.Response, error) {
+		available := int64(-1)
+		if s.quota != nil {
+			available = s.quota.Limit() - s.quota.Total()
+		}
+		return wire.OK(Capabilities{Writable: available != 0, AvailableBytes: available})
+	})
 	router.Handle(MethodPutShard, s.handlePutShard)
 	router.Handle(MethodGetShard, s.handleGetShard)
 	router.Handle(MethodDeleteShard, s.handleDeleteShard)
@@ -187,6 +255,9 @@ func (s *Server) Register(router *wire.Router) {
 func (s *Server) handlePutShard(ctx context.Context, req wire.Request) (wire.Response, error) {
 	var in PutShardRequest
 	if err := json.Unmarshal(req.Payload, &in); err != nil {
+		return wire.Response{}, err
+	}
+	if err := authorize(ctx, in.Ref); err != nil {
 		return wire.Response{}, err
 	}
 	out, err := s.PutShard(ctx, in)
@@ -199,6 +270,9 @@ func (s *Server) handlePutShard(ctx context.Context, req wire.Request) (wire.Res
 func (s *Server) handleGetShard(ctx context.Context, req wire.Request) (wire.Response, error) {
 	var in GetShardRequest
 	if err := json.Unmarshal(req.Payload, &in); err != nil {
+		return wire.Response{}, err
+	}
+	if err := authorize(ctx, in.Ref); err != nil {
 		return wire.Response{}, err
 	}
 	out, err := s.GetShard(ctx, in)
@@ -233,9 +307,19 @@ func (s *Server) handleDeleteShard(ctx context.Context, req wire.Request) (wire.
 	if err := json.Unmarshal(req.Payload, &in); err != nil {
 		return wire.Response{}, err
 	}
+	if err := authorize(ctx, in.Ref); err != nil {
+		return wire.Response{}, err
+	}
 	out, err := s.DeleteShard(ctx, in)
 	if err != nil {
 		return wire.Response{}, err
 	}
 	return wire.OK(out)
+}
+
+func authorize(ctx context.Context, ref ShardRef) error {
+	if remote := wire.RemotePeer(ctx); remote == "" || ref.Owner != remote.String() {
+		return ErrUnauthorized
+	}
+	return nil
 }

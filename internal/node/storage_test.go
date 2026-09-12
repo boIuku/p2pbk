@@ -178,8 +178,8 @@ func TestShouldUseDistributedStorageIgnoresSavedPublicDiscoveryPeer(t *testing.T
 	if err != nil {
 		t.Fatalf("ShouldUseDistributedStorage returned error: %v", err)
 	}
-	if distributed {
-		t.Fatal("distributed = true with only public discovery peer saved")
+	if !distributed {
+		t.Fatal("configured public discovery infrastructure must request remote storage; it must not silently select local disk")
 	}
 }
 

@@ -26,6 +26,7 @@ const (
 )
 
 type options struct {
+	KeyPath            string
 	ListenAddrs        []string
 	AnnounceAddrs      []string
 	EnableNATPortMap   bool
@@ -51,6 +52,7 @@ func newRootCommand(runFn func(context.Context, options, io.Writer) error) *cobr
 		},
 	}
 	cmd.Flags().StringSliceVar(&opts.ListenAddrs, "listen-addr", opts.ListenAddrs, "libp2p listen multiaddr; repeat or comma-separate for multiple addresses")
+	cmd.Flags().StringVar(&opts.KeyPath, "key-file", opts.KeyPath, "persistent network identity file (retain across restarts)")
 	cmd.Flags().StringSliceVar(&opts.AnnounceAddrs, "announce-addr", opts.AnnounceAddrs, "public libp2p multiaddr to advertise; repeat or comma-separate for multiple addresses")
 	cmd.Flags().BoolVar(&opts.EnableNATPortMap, "nat-port-map", opts.EnableNATPortMap, "try to open the listen port with UPnP/NAT-PMP")
 	cmd.Flags().BoolVar(&opts.EnableRelayService, "relay-service", opts.EnableRelayService, "run libp2p circuit relay v2 service")
@@ -59,6 +61,7 @@ func newRootCommand(runFn func(context.Context, options, io.Writer) error) *cobr
 
 func optionsFromEnv() options {
 	return options{
+		KeyPath:            "p2pdiscovery.key",
 		ListenAddrs:        envStringSlice(envListenAddrs, []string{defaultListenAddr}),
 		AnnounceAddrs:      envStringSlice(envAnnounceAddrs, nil),
 		EnableNATPortMap:   envBool(envNATPortMap, true),
@@ -71,6 +74,7 @@ func run(ctx context.Context, opts options, out io.Writer) error {
 		return errors.New("at least one listen address is required")
 	}
 	h, err := p2phost.New(ctx, p2phost.Options{
+		KeyPath:            opts.KeyPath,
 		ListenAddrs:        opts.ListenAddrs,
 		AnnounceAddrs:      opts.AnnounceAddrs,
 		EnableNATPortMap:   opts.EnableNATPortMap,

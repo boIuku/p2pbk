@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"p2pbk/internal/backend/p2p/locator"
 	"time"
 
 	kaddht "github.com/libp2p/go-libp2p-kad-dht"
@@ -49,24 +50,28 @@ func New(ctx context.Context, h corehost.Host, mode Mode) (*DHT, error) {
 type p2pbkValidator struct{}
 
 func (p2pbkValidator) Validate(key string, value []byte) error {
-	if key == "" {
-		return errors.New("dht key is required")
-	}
-	if len(value) == 0 {
-		return errors.New("dht value is required")
-	}
-	return nil
+	return locator.ValidateValue(key, value)
 }
 
 func (p2pbkValidator) Select(key string, values [][]byte) (int, error) {
 	if len(values) == 0 {
 		return 0, errors.New("cannot select from no dht values")
 	}
-	best := 0
-	for i := 1; i < len(values); i++ {
-		if dhtRecordTime(values[i]).After(dhtRecordTime(values[best])) {
-			best = i
+	best := -1
+	var revision uint64
+	for i, value := range values {
+		if locator.ValidateValue(key, value) != nil {
+			continue
 		}
+		var r locator.SignedRecord
+		_ = json.Unmarshal(value, &r)
+		if best < 0 || r.Revision > revision {
+			best = i
+			revision = r.Revision
+		}
+	}
+	if best < 0 {
+		return 0, errors.New("no valid locator records")
 	}
 	return best, nil
 }

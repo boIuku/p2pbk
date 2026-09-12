@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	corehost "github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -67,7 +69,38 @@ func OpenDistributedStorage(ctx context.Context, cfg config.Config, h corehost.H
 		return nil, err
 	}
 
-	loc, err := locator.NewDHT(dht, id, id.PublicKey())
+	paths, err := cfg.Paths()
+	if err != nil {
+		_ = dht.Close()
+		closeStore()
+		return nil, err
+	}
+	if cfg.Network.Discovery == "remote" && len(cfg.Network.PublicDiscoveryPeers) > 0 && len(connectedStoragePeers(h, infrastructureFilter)) < cfg.Network.MinPeers {
+		discoveryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		svc, startErr := p2pdiscovery.StartRemote(discoveryCtx, h, store, dht, cfg.Network.RemoteDiscoveryNamespace, p2pdiscovery.WithRemoteInterval(time.Second), p2pdiscovery.WithRemoteIgnoredPeers(infrastructureFilter))
+		if startErr == nil {
+			ticker := time.NewTicker(50 * time.Millisecond)
+			for len(connectedStoragePeers(h, infrastructureFilter)) < cfg.Network.MinPeers && discoveryCtx.Err() == nil {
+				select {
+				case <-ticker.C:
+				case <-discoveryCtx.Done():
+				}
+			}
+			ticker.Stop()
+			cancel()
+			_ = svc.Close()
+		} else {
+			cancel()
+		}
+	}
+	if _, err := os.Stat(filepath.Join(paths.DataDir, "kopia.repository.config")); err == nil {
+		if _, err := os.Stat(filepath.Join(paths.DataDir, "locators.json")); err != nil {
+			_ = dht.Close()
+			closeStore()
+			return nil, fmt.Errorf("recovery locator metadata missing: %w", err)
+		}
+	}
+	loc, err := locator.NewPersistentDHT(dht, id, filepath.Join(paths.DataDir, "locators.json"))
 	if err != nil {
 		_ = dht.Close()
 		closeStore()
@@ -117,13 +150,19 @@ func openDistributedStorageWithConnectedPeers(cfg config.Config, h corehost.Host
 	if minPeers == 0 {
 		minPeers = 1
 	}
-	if len(peers) < minPeers {
-		return nil, nil, fmt.Errorf("connected peers %d below network.min_peers %d", len(peers), minPeers)
+	dispatch := dispatcher.New(h)
+	var writable []peer.ID
+	for _, p := range peers {
+		probe, cancel := context.WithTimeout(context.Background(), time.Second)
+		cap, err := dispatch.Capabilities(probe, p)
+		cancel()
+		if err == nil && cap.Writable {
+			writable = append(writable, p)
+		}
 	}
-
-	strategy, err := placement.NewScoredRoundRobin(peers, peerScores(store))
-	if err != nil {
-		return nil, nil, err
+	var strategy placement.Strategy = unavailablePlacement{have: len(writable), want: minPeers}
+	if len(writable) >= minPeers {
+		strategy, _ = placement.NewScoredRoundRobin(writable, peerScores(store))
 	}
 	backend, err := p2p.NewDistributedBackend(dispatcher.New(h), strategy, loc, p2p.WithTrustDB(store))
 	if err != nil {
@@ -134,7 +173,7 @@ func openDistributedStorageWithConnectedPeers(cfg config.Config, h corehost.Host
 		return nil, nil, err
 	}
 	st, err := p2p.NewStorage(backend, p2p.Options{
-		Owner:        owner(cfg),
+		Owner:        h.ID().String(),
 		DataShards:   cfg.Backup.DataShards,
 		ParityShards: cfg.Backup.ParityShards,
 		DisplayName:  "p2pbk distributed storage",
@@ -144,6 +183,12 @@ func openDistributedStorageWithConnectedPeers(cfg config.Config, h corehost.Host
 		return nil, nil, err
 	}
 	return st, peers, nil
+}
+
+type unavailablePlacement struct{ have, want int }
+
+func (p unavailablePlacement) Place(int) ([]placement.Assignment, error) {
+	return nil, fmt.Errorf("insufficient writable storage peers: connected %d, require %d", p.have, p.want)
 }
 
 func peerScores(store *localdb.DB) map[peer.ID]float64 {
@@ -196,9 +241,6 @@ func connectedStoragePeers(h corehost.Host, filter p2pdiscovery.PeerFilter) []pe
 }
 
 func owner(cfg config.Config) string {
-	if cfg.Node.DisplayName != "" {
-		return cfg.Node.DisplayName
-	}
 	return "local"
 }
 

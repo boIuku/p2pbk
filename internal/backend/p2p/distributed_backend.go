@@ -3,6 +3,8 @@ package p2p
 import (
 	"context"
 	"errors"
+	"github.com/libp2p/go-libp2p/core/routing"
+	"sync"
 	"time"
 
 	"p2pbk/internal/backend/p2p/dispatcher"
@@ -16,6 +18,7 @@ import (
 const shardFetchTimeout = 5 * time.Second
 
 type DistributedBackend struct {
+	mu         sync.Mutex
 	dispatcher *dispatcher.Dispatcher
 	placement  placement.Strategy
 	locator    locator.Locator
@@ -48,6 +51,8 @@ func NewDistributedBackend(dispatcher *dispatcher.Dispatcher, placement placemen
 }
 
 func (b *DistributedBackend) PutShard(ctx context.Context, req blobserver.PutShardRequest) (blobserver.PutShardResponse, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	assignments, err := b.placement.Place(req.Ref.Index + 1)
 	if err != nil {
 		return blobserver.PutShardResponse{}, err
@@ -62,6 +67,12 @@ func (b *DistributedBackend) PutShard(ctx context.Context, req blobserver.PutSha
 	}
 
 	if err := b.recordLocation(ctx, req.Ref.BlobID, locator.Location{Peer: target, Ref: req.Ref}); err != nil {
+		cleanup, cancel := context.WithTimeout(context.Background(), shardFetchTimeout)
+		_, cleanupErr := b.dispatcher.DeleteShard(cleanup, target, blobserver.DeleteShardRequest{Ref: req.Ref})
+		cancel()
+		if cleanupErr != nil {
+			return blobserver.PutShardResponse{}, errors.Join(err, cleanupErr)
+		}
 		return blobserver.PutShardResponse{}, err
 	}
 	if b.trustDB != nil {
@@ -116,6 +127,8 @@ func (b *DistributedBackend) GetShard(ctx context.Context, req blobserver.GetSha
 }
 
 func (b *DistributedBackend) DeleteShard(ctx context.Context, req blobserver.DeleteShardRequest) (blobserver.DeleteShardResponse, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	locations, err := b.locator.Get(ctx, req.Ref.BlobID)
 	if err != nil {
 		return blobserver.DeleteShardResponse{}, err
@@ -146,8 +159,10 @@ func (b *DistributedBackend) DeleteShard(ctx context.Context, req blobserver.Del
 
 func (b *DistributedBackend) recordLocation(ctx context.Context, blobID string, location locator.Location) error {
 	locations, err := b.locator.Get(ctx, blobID)
-	if err != nil {
+	if errors.Is(err, routing.ErrNotFound) {
 		locations = nil
+	} else if err != nil {
+		return err
 	}
 	locations = upsertLocation(locations, location)
 	return b.locator.Put(ctx, blobID, locations)

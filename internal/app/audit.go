@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"p2pbk/internal/audit"
@@ -36,7 +37,7 @@ func RunAudit(ctx context.Context, req AuditRequest) (AuditResult, error) {
 	}
 	defer db.Close()
 
-	host, err := p2phost.New(ctx, p2phost.Options{ListenAddrs: req.Config.Network.ListenAddrs})
+	host, err := p2phost.New(ctx, p2phost.Options{KeyPath: filepath.Join(paths.DataDir, "network.key")})
 	if err != nil {
 		return AuditResult{}, err
 	}

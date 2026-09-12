@@ -26,6 +26,7 @@ type NodeConfig struct {
 }
 
 type StorageConfig struct {
+	Mode           string `mapstructure:"mode" json:"mode"`
 	StoreDir       string `mapstructure:"store_dir" json:"store_dir"`
 	CacheDir       string `mapstructure:"cache_dir" json:"cache_dir"`
 	CacheSizeBytes int64  `mapstructure:"cache_size_bytes" json:"cache_size_bytes"`
@@ -33,6 +34,7 @@ type StorageConfig struct {
 }
 
 type NetworkConfig struct {
+	AnnounceAddrs                    []string `mapstructure:"announce_addrs" json:"announce_addrs"`
 	ListenAddrs                      []string `mapstructure:"listen_addrs" json:"listen_addrs"`
 	BootstrapPeers                   []string `mapstructure:"bootstrap_peers" json:"bootstrap_peers"`
 	PublicDiscoveryPeers             []string `mapstructure:"public_discovery_peers" json:"public_discovery_peers"`
@@ -92,6 +94,9 @@ func Load(path string) (Config, error) {
 // Validate checks cross-field and range constraints.
 func (c Config) Validate() error {
 	var errs []error
+	if c.Storage.Mode != "" && c.Storage.Mode != "auto" && c.Storage.Mode != "local" && c.Storage.Mode != "remote" {
+		errs = append(errs, errors.New("storage.mode must be auto, local, or remote"))
+	}
 
 	if c.Node.DataDir == "" {
 		errs = append(errs, errors.New("node.data_dir is required"))

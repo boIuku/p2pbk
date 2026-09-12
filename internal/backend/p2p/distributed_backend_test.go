@@ -44,7 +44,7 @@ func TestDistributedStorageRoundTripAcrossPeers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDistributedBackend returned error: %v", err)
 	}
-	st, err := NewStorage(backend, Options{Owner: "owner", DataShards: 2, ParityShards: 1})
+	st, err := NewStorage(backend, Options{Owner: client.ID().String(), DataShards: 2, ParityShards: 1})
 	if err != nil {
 		t.Fatalf("NewStorage returned error: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestDistributedStorageRecordsPeerLocationsForEachShard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDistributedBackend returned error: %v", err)
 	}
-	st, err := NewStorage(backend, Options{Owner: "owner", DataShards: 2, ParityShards: 1})
+	st, err := NewStorage(backend, Options{Owner: client.ID().String(), DataShards: 2, ParityShards: 1})
 	if err != nil {
 		t.Fatalf("NewStorage returned error: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestDistributedStorageRecordsPeerLocationsForEachShard(t *testing.T) {
 		t.Fatalf("strategy Place returned error: %v", err)
 	}
 	for i, location := range locations {
-		if location.Ref.Owner != "owner" {
+		if location.Ref.Owner != client.ID().String() {
 			t.Fatalf("location %d owner = %q, want owner", i, location.Ref.Owner)
 		}
 		if location.Ref.BlobID != locationKey {
@@ -152,7 +152,7 @@ func TestDistributedStorageUpdatesAndDeletesPeerLocations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDistributedBackend returned error: %v", err)
 	}
-	st, err := NewStorage(backend, Options{Owner: "owner", DataShards: 2, ParityShards: 1})
+	st, err := NewStorage(backend, Options{Owner: client.ID().String(), DataShards: 2, ParityShards: 1})
 	if err != nil {
 		t.Fatalf("NewStorage returned error: %v", err)
 	}
@@ -165,6 +165,8 @@ func TestDistributedStorageUpdatesAndDeletesPeerLocations(t *testing.T) {
 	if err := st.PutBlob(ctx, blobID, testBytes("second payload with different bytes"), blob.PutOptions{}); err != nil {
 		t.Fatalf("second PutBlob returned error: %v", err)
 	}
+	// Overwrites use a new immutable generation; verify its placement and cleanup.
+	locationKey = st.manifests[blobID].ShardBlobID
 	locations, err := loc.Get(ctx, locationKey)
 	if err != nil {
 		t.Fatalf("locator Get returned error: %v", err)
@@ -209,7 +211,7 @@ func TestDistributedStorageRecoversWhenOnePeerIsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDistributedBackend returned error: %v", err)
 	}
-	st, err := NewStorage(backend, Options{Owner: "owner", DataShards: 2, ParityShards: 1})
+	st, err := NewStorage(backend, Options{Owner: client.ID().String(), DataShards: 2, ParityShards: 1})
 	if err != nil {
 		t.Fatalf("NewStorage returned error: %v", err)
 	}

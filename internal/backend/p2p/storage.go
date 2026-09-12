@@ -3,11 +3,14 @@ package p2p
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/gofrs/flock"
 	"os"
+	"p2pbk/internal/durable"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -30,6 +33,9 @@ type Storage struct {
 	blob.DefaultProviderImplementation
 
 	mu        sync.RWMutex
+	opMu      sync.Mutex
+	pending   []blobserver.ShardRef
+	writeFile func(string, []byte, os.FileMode) error
 	options   Options
 	codec     *erasure.Codec
 	backend   ShardBackend
@@ -38,8 +44,9 @@ type Storage struct {
 }
 
 type storedManifest struct {
-	Metadata blob.Metadata
-	Erasure  erasure.Manifest
+	ShardBlobID string
+	Metadata    blob.Metadata
+	Erasure     erasure.Manifest
 }
 
 func NewStorage(backend ShardBackend, options Options) (*Storage, error) {
@@ -58,14 +65,25 @@ func NewStorage(backend ShardBackend, options Options) (*Storage, error) {
 		codec:     codec,
 		backend:   backend,
 		manifests: map[blob.ID]storedManifest{},
+		writeFile: durable.WriteFile,
 	}
-	if err := s.loadManifests(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	unlock, err := s.begin(ctx)
+	if err != nil {
 		return nil, err
 	}
+	defer unlock()
+	_ = s.cleanPending(ctx)
 	return s, nil
 }
 
 func (s *Storage) PutBlob(ctx context.Context, blobID blob.ID, data blob.Bytes, opts blob.PutOptions) error {
+	unlock, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if opts.HasRetentionOptions() {
 		return blob.ErrUnsupportedPutBlobOption
 	}
@@ -98,15 +116,31 @@ func (s *Storage) PutBlob(ctx context.Context, blobID blob.ID, data blob.Bytes, 
 	}
 	s.mu.Unlock()
 
-	refs := make([]blobserver.ShardRef, 0, len(shards))
+	old, existed := s.manifests[blobID]
+	shardID := hex.EncodeToString([]byte(blobID))
+	if existed {
+		sum := sha256.Sum256(payload)
+		shardID += "-" + hex.EncodeToString(sum[:])
+	}
+	// Stage immutable generations and journal all cleanup work before touching peers.
+	// Pending refs still referenced by a committed manifest are never removed.
 	for _, shard := range shards {
-		ref := s.shardRef(blobID, shard.Index)
-		refs = append(refs, ref)
+		s.pending = append(s.pending, blobserver.ShardRef{Owner: s.options.Owner, BlobID: shardID, Index: shard.Index})
+	}
+	if existed {
+		s.pending = append(s.pending, s.refs(blobID, old)...)
+	}
+	if err := s.savePending(); err != nil {
+		return err
+	}
+	for _, shard := range shards {
+		ref := blobserver.ShardRef{Owner: s.options.Owner, BlobID: shardID, Index: shard.Index}
 		if _, err := s.backend.PutShard(ctx, blobserver.PutShardRequest{
 			Ref:  ref,
 			Data: shard.Data,
 			Hash: hex.EncodeToString(shard.Hash[:]),
 		}); err != nil {
+			_ = s.cleanPending(ctx)
 			return fmt.Errorf("put shard %d: %w", shard.Index, err)
 		}
 	}
@@ -117,12 +151,19 @@ func (s *Storage) PutBlob(ctx context.Context, blobID blob.ID, data blob.Bytes, 
 		return errors.New("storage is closed")
 	}
 	s.manifests[blobID] = storedManifest{
-		Metadata: blob.Metadata{BlobID: blobID, Length: int64(len(payload)), Timestamp: modTime},
-		Erasure:  manifest,
+		ShardBlobID: shardID,
+		Metadata:    blob.Metadata{BlobID: blobID, Length: int64(len(payload)), Timestamp: modTime},
+		Erasure:     manifest,
 	}
 	if err := s.saveManifestsLocked(); err != nil {
+		if existed {
+			s.manifests[blobID] = old
+		} else {
+			delete(s.manifests, blobID)
+		}
 		return err
 	}
+	_ = s.cleanPending(ctx)
 	if opts.GetModTime != nil {
 		*opts.GetModTime = modTime
 	}
@@ -131,6 +172,11 @@ func (s *Storage) PutBlob(ctx context.Context, blobID blob.ID, data blob.Bytes, 
 }
 
 func (s *Storage) GetBlob(ctx context.Context, blobID blob.ID, offset, length int64, output blob.OutputBuffer) error {
+	unlock, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	manifest, err := s.manifest(blobID)
 	if err != nil {
 		return err
@@ -139,21 +185,34 @@ func (s *Storage) GetBlob(ctx context.Context, blobID blob.ID, offset, length in
 	if offset < 0 || offset > manifest.Metadata.Length {
 		return blob.ErrInvalidRange
 	}
-	if length >= 0 && offset+length > manifest.Metadata.Length {
+	if length >= 0 && length > manifest.Metadata.Length-offset {
 		return blob.ErrInvalidRange
 	}
 
 	shards := make([]erasure.Shard, 0, len(manifest.Erasure.Shards))
+	codec, err := erasure.New(manifest.Erasure.DataShards, manifest.Erasure.ParityShards)
+	if err != nil {
+		return err
+	}
 	for _, info := range manifest.Erasure.Shards {
-		ref := s.shardRef(blobID, info.Index)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		ref := s.ref(blobID, manifest, info.Index)
 		got, err := s.backend.GetShard(ctx, blobserver.GetShardRequest{Ref: ref})
 		if err != nil {
 			continue
 		}
+		if len(got.Data) != manifest.Erasure.ShardSize || sha256.Sum256(got.Data) != info.Hash {
+			continue
+		}
 		shards = append(shards, erasure.Shard{Index: info.Index, Data: got.Data, Hash: info.Hash})
+		if len(shards) >= manifest.Erasure.DataShards {
+			break
+		}
 	}
 
-	payload, err := s.codec.Decode(manifest.Erasure, shards)
+	payload, err := codec.Decode(manifest.Erasure, shards)
 	if err != nil {
 		return fmt.Errorf("decode blob shards: %w", err)
 	}
@@ -171,6 +230,11 @@ func (s *Storage) GetBlob(ctx context.Context, blobID blob.ID, offset, length in
 }
 
 func (s *Storage) GetMetadata(ctx context.Context, blobID blob.ID) (blob.Metadata, error) {
+	unlock, err := s.begin(ctx)
+	if err != nil {
+		return blob.Metadata{}, err
+	}
+	defer unlock()
 	manifest, err := s.manifest(blobID)
 	if err != nil {
 		return blob.Metadata{}, err
@@ -179,6 +243,10 @@ func (s *Storage) GetMetadata(ctx context.Context, blobID blob.ID) (blob.Metadat
 }
 
 func (s *Storage) ListBlobs(ctx context.Context, prefix blob.ID, cb func(blob.Metadata) error) error {
+	unlock, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
 	s.mu.RLock()
 	ids := make([]string, 0, len(s.manifests))
 	for id := range s.manifests {
@@ -193,6 +261,7 @@ func (s *Storage) ListBlobs(ctx context.Context, prefix blob.ID, cb func(blob.Me
 		metadata = append(metadata, s.manifests[blob.ID(id)].Metadata)
 	}
 	s.mu.RUnlock()
+	unlock()
 
 	for _, md := range metadata {
 		if err := cb(md); err != nil {
@@ -203,29 +272,36 @@ func (s *Storage) ListBlobs(ctx context.Context, prefix blob.ID, cb func(blob.Me
 }
 
 func (s *Storage) DeleteBlob(ctx context.Context, blobID blob.ID) error {
+	unlock, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	manifest, err := s.manifest(blobID)
 	if err != nil {
 		return err
 	}
 
-	for _, info := range manifest.Erasure.Shards {
-		_, err := s.backend.DeleteShard(ctx, blobserver.DeleteShardRequest{Ref: s.shardRef(blobID, info.Index)})
-		if err != nil {
-			return fmt.Errorf("delete shard %d: %w", info.Index, err)
-		}
+	s.pending = append(s.pending, s.refs(blobID, manifest)...)
+	if err := s.savePending(); err != nil {
+		return err
 	}
 
 	s.mu.Lock()
 	delete(s.manifests, blobID)
 	if err := s.saveManifestsLocked(); err != nil {
+		s.manifests[blobID] = manifest
 		s.mu.Unlock()
 		return err
 	}
 	s.mu.Unlock()
+	_ = s.cleanPending(ctx)
 	return nil
 }
 
 func (s *Storage) Close(ctx context.Context) error {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
@@ -288,6 +364,7 @@ func (s *Storage) loadManifests() error {
 	}
 	data, err := os.ReadFile(s.options.ManifestPath)
 	if errors.Is(err, os.ErrNotExist) {
+		s.manifests = map[blob.ID]storedManifest{}
 		return nil
 	}
 	if err != nil {
@@ -298,6 +375,7 @@ func (s *Storage) loadManifests() error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("decode manifest index: %w", err)
 	}
+	s.manifests = map[blob.ID]storedManifest{}
 	for id, manifest := range raw {
 		manifest.Metadata.BlobID = blob.ID(id)
 		s.manifests[blob.ID(id)] = manifest
@@ -317,28 +395,115 @@ func (s *Storage) saveManifestsLocked() error {
 	if err != nil {
 		return fmt.Errorf("encode manifest index: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(s.options.ManifestPath), 0o700); err != nil {
-		return fmt.Errorf("create manifest directory: %w", err)
+	return s.writeFile(s.options.ManifestPath, data, 0600)
+}
+
+func (s *Storage) ref(id blob.ID, m storedManifest, index int) blobserver.ShardRef {
+	r := s.shardRef(id, index)
+	if m.ShardBlobID != "" {
+		r.BlobID = m.ShardBlobID
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(s.options.ManifestPath), "manifests-*.tmp")
+	return r
+}
+func (s *Storage) refs(id blob.ID, m storedManifest) []blobserver.ShardRef {
+	refs := make([]blobserver.ShardRef, 0, len(m.Erasure.Shards))
+	for _, info := range m.Erasure.Shards {
+		refs = append(refs, s.ref(id, m, info.Index))
+	}
+	return refs
+}
+
+// begin serializes processes as well as goroutines and reloads committed state.
+// This is deliberately one metadata transaction at a time until a transactional
+// database replaces the JSON index. A mutex alone cannot protect two CLI processes.
+func (s *Storage) begin(ctx context.Context) (func(), error) {
+	s.opMu.Lock()
+	if ctx.Err() != nil {
+		s.opMu.Unlock()
+		return nil, ctx.Err()
+	}
+	var lock *flock.Flock
+	fail := func(err error) (func(), error) {
+		if lock != nil {
+			_ = lock.Unlock()
+		}
+		s.opMu.Unlock()
+		return nil, err
+	}
+	if s.options.ManifestPath != "" {
+		if err := os.MkdirAll(filepath.Dir(s.options.ManifestPath), 0700); err != nil {
+			return fail(err)
+		}
+		lock = flock.New(s.options.ManifestPath + ".lock")
+		ok, err := lock.TryLockContext(ctx, 10*time.Millisecond)
+		if err != nil {
+			return fail(err)
+		}
+		if !ok {
+			return fail(errors.New("metadata locked"))
+		}
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return fail(errors.New("storage is closed"))
+	}
+	err := s.loadManifests()
+	s.mu.Unlock()
 	if err != nil {
-		return fmt.Errorf("create manifest temp file: %w", err)
+		return fail(err)
 	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("write manifest temp file: %w", err)
+	if s.options.ManifestPath != "" {
+		data, err := os.ReadFile(s.options.ManifestPath + ".pending")
+		if err == nil {
+			if err = json.Unmarshal(data, &s.pending); err != nil {
+				return fail(err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fail(err)
+		}
 	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("close manifest temp file: %w", err)
+	return func() {
+		if lock != nil {
+			_ = lock.Unlock()
+		}
+		s.opMu.Unlock()
+	}, nil
+}
+
+func (s *Storage) savePending() error {
+	if s.options.ManifestPath == "" {
+		return nil
 	}
-	if err := os.Rename(tmpPath, s.options.ManifestPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("replace manifest index: %w", err)
+	data, err := json.Marshal(s.pending)
+	if err != nil {
+		return err
 	}
-	return nil
+	return s.writeFile(s.options.ManifestPath+".pending", data, 0600)
+}
+func (s *Storage) cleanPending(ctx context.Context) error {
+	active := map[blobserver.ShardRef]bool{}
+	for id, m := range s.manifests {
+		for _, r := range s.refs(id, m) {
+			active[r] = true
+		}
+	}
+	remaining := []blobserver.ShardRef{}
+	seen := map[blobserver.ShardRef]bool{}
+	for _, ref := range s.pending {
+		if active[ref] || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		cleanup, cancel := context.WithTimeout(ctx, time.Second)
+		_, err := s.backend.DeleteShard(cleanup, blobserver.DeleteShardRequest{Ref: ref})
+		cancel()
+		if err != nil {
+			remaining = append(remaining, ref)
+		}
+	}
+	s.pending = remaining
+	return s.savePending()
 }
 
 var _ blob.Storage = (*Storage)(nil)

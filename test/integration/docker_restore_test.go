@@ -1,7 +1,10 @@
+//go:build docker
+
 package integration
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,7 +39,6 @@ func TestDockerRestoreAfterMaxNodeLoss(t *testing.T) {
 	if out, err := cluster.docker.run(ctx, "stop", "node3"); err != nil {
 		t.Fatalf("stop node3 failed: %v\n%s", err, out)
 	}
-	cluster.setClientBootstrapPeers(cluster.storagePeers[:2])
 	cluster.restoreLatest(ctx, "/work/restore")
 	cluster.assertRestoredBytes("degraded-restore.bin", want)
 }
@@ -55,10 +57,12 @@ func TestDockerRestoreFailsBeyondParity(t *testing.T) {
 	if out, err := cluster.docker.run(ctx, "stop", "node2", "node3"); err != nil {
 		t.Fatalf("stop node2/node3 failed: %v\n%s", err, out)
 	}
-	cluster.setClientBootstrapPeers(cluster.storagePeers[:1])
 	if out, err := cluster.runClient(ctx, "restore", "latest", "/work/restore"); err == nil {
 		t.Fatalf("restore unexpectedly succeeded after losing more nodes than parity allows:\n%s", out)
 	} else {
+		if ctx.Err() != nil || !strings.Contains(out, "not enough valid shards") {
+			t.Fatalf("expected insufficient shards, got %v: %s", err, out)
+		}
 		t.Logf("restore failed as expected after excessive node loss:\n%s", out)
 	}
 }

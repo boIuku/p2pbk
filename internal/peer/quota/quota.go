@@ -9,9 +9,9 @@ import (
 var ErrExceeded = errors.New("quota exceeded")
 
 type Manager struct {
-	mu       sync.Mutex
-	limit    int64
-	used     map[string]int64
+	mu        sync.Mutex
+	limit     int64
+	used      map[string]int64
 	updatedAt time.Time
 }
 
@@ -33,12 +33,25 @@ func (m *Manager) Reserve(owner string, delta int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.limit > 0 && m.total()+delta > m.limit {
+	if delta > m.limit-m.total() {
 		return ErrExceeded
 	}
 	m.used[owner] += delta
 	m.updatedAt = time.Now()
 	return nil
+}
+
+// Restore rebuilds accounting from committed shard files, including an already
+// over-budget store after an operator lowers the limit. Existing bytes stay readable.
+func (m *Manager) Restore(used map[string]int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.used = make(map[string]int64, len(used))
+	for owner, size := range used {
+		if size > 0 {
+			m.used[owner] = size
+		}
+	}
 }
 
 func (m *Manager) Release(owner string, size int64) {

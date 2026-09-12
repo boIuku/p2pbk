@@ -21,9 +21,9 @@ const (
 
 type Responder struct {
 	blobserver    *blobserver.Server
-	localdb      *localdb.DB
+	localdb       *localdb.DB
 	reputation    *reputation.Tracker
-	peerID       peer.ID
+	peerID        peer.ID
 	reputationKey string
 }
 
@@ -43,10 +43,10 @@ func WithReputationKey(key string) ResponderOption {
 
 func New(bs *blobserver.Server, db *localdb.DB, rep *reputation.Tracker, opts ...ResponderOption) *Responder {
 	r := &Responder{
-		blobserver:   bs,
-		localdb:      db,
-		reputation:   rep,
-		peerID:       peer.ID(""),
+		blobserver:    bs,
+		localdb:       db,
+		reputation:    rep,
+		peerID:        peer.ID(""),
 		reputationKey: "",
 	}
 	for _, opt := range opts {
@@ -78,6 +78,9 @@ func (r *Responder) handleChallenge(ctx context.Context, req wire.Request) (wire
 	var ch challenges.Challenge
 	if err := json.Unmarshal(req.Payload, &ch); err != nil {
 		return wire.Response{}, err
+	}
+	if p := wire.RemotePeer(ctx); p == "" || ch.Ref.Owner != p.String() {
+		return wire.Response{}, blobserver.ErrUnauthorized
 	}
 
 	// Log incoming challenge

@@ -21,6 +21,9 @@ func newRootCommand() *cobra.Command {
 		Use:   "p2pbk",
 		Short: "Peer-to-peer backup CLI",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.CommandPath() == "p2pbk recovery import" {
+				return nil
+			}
 			path := configPath
 			if path == "" {
 				path = defaultConfigPath()
@@ -58,6 +61,7 @@ func newRootCommand() *cobra.Command {
 	cmd.AddCommand(newResetCommand())
 	cmd.AddCommand(newDaemonCommand())
 	cmd.AddCommand(newBootstrapCommand())
+	cmd.AddCommand(newRecoveryCommand())
 
 	cmd.AddCommand(&cobra.Command{
 		Use:   "version",

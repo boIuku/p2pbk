@@ -26,6 +26,8 @@ type Record struct {
 }
 
 type SignedRecord struct {
+	PublicKey string           `json:"public_key"`
+	Revision  uint64           `json:"revision"`
 	BlobID    string           `json:"blob_id"`
 	Locations []SignedLocation `json:"locations"`
 	IssuedAt  time.Time        `json:"issued_at"`
@@ -52,6 +54,8 @@ func signRecord(signer *identity.Identity, blobID string, locations []Location) 
 		signedLocations = append(signedLocations, SignedLocation{Peer: loc.Peer.String(), Ref: loc.Ref})
 	}
 	record := SignedRecord{
+		PublicKey: base64.StdEncoding.EncodeToString(signer.PublicKey()),
+		Revision:  uint64(time.Now().UnixNano()),
 		BlobID:    blobID,
 		Locations: signedLocations,
 		IssuedAt:  time.Now().UTC(),
@@ -88,11 +92,15 @@ func VerifyRecord(record SignedRecord, public ed25519.PublicKey) error {
 
 func (r SignedRecord) signingPayload() ([]byte, error) {
 	payload := struct {
+		PublicKey string           `json:"public_key"`
+		Revision  uint64           `json:"revision"`
 		BlobID    string           `json:"blob_id"`
 		Locations []SignedLocation `json:"locations"`
 		IssuedAt  time.Time        `json:"issued_at"`
 		SignedBy  string           `json:"signed_by"`
 	}{
+		PublicKey: r.PublicKey,
+		Revision:  r.Revision,
 		BlobID:    r.BlobID,
 		Locations: append([]SignedLocation(nil), r.Locations...),
 		IssuedAt:  r.IssuedAt.UTC(),

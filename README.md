@@ -301,6 +301,9 @@ depending on remote discovery infrastructure.
 
 ## Development
 
+See the [reliability review and test plan](docs/RELIABILITY_TEST_PLAN.md) for
+current product risks, missing regression tests, and proposed CI release gates.
+
 Build the local binary on Windows:
 
 ```powershell

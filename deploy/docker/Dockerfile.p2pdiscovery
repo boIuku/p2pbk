@@ -7,6 +7,8 @@ RUN go build -o /out/p2pdiscovery ./cmd/p2pdiscovery
 
 FROM alpine:3.20
 RUN adduser -D -H p2pdiscovery
+RUN mkdir /data && chown p2pdiscovery:p2pdiscovery /data
+WORKDIR /data
 COPY --from=build /out/p2pdiscovery /usr/local/bin/p2pdiscovery
 USER p2pdiscovery
 EXPOSE 4001/tcp

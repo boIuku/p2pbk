@@ -2,7 +2,13 @@ package host
 
 import (
 	"context"
+	"crypto/rand"
+	"errors"
 	"fmt"
+	"github.com/gofrs/flock"
+	"os"
+	"p2pbk/internal/durable"
+	"path/filepath"
 
 	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -12,6 +18,7 @@ import (
 )
 
 type Options struct {
+	KeyPath            string
 	ListenAddrs        []string
 	AnnounceAddrs      []string
 	PrivateKey         crypto.PrivKey
@@ -23,6 +30,13 @@ type Options struct {
 }
 
 func New(ctx context.Context, opts Options) (corehost.Host, error) {
+	if opts.PrivateKey == nil && opts.KeyPath != "" {
+		var err error
+		opts.PrivateKey, err = LoadOrCreateKey(opts.KeyPath)
+		if err != nil {
+			return nil, err
+		}
+	}
 	listenAddrs := opts.ListenAddrs
 	if len(listenAddrs) == 0 {
 		listenAddrs = []string{"/ip4/127.0.0.1/tcp/0"}
@@ -74,6 +88,38 @@ func New(ctx context.Context, opts Options) (corehost.Host, error) {
 	}()
 
 	return h, nil
+}
+
+// LoadOrCreateKey preserves the identity in saved multiaddrs and shard receipts.
+// A corrupt key is an error: silently generating a replacement strands old data.
+func LoadOrCreateKey(path string) (crypto.PrivKey, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
+	}
+	lock := flock.New(path + ".lock")
+	if err := lock.Lock(); err != nil {
+		return nil, err
+	}
+	defer lock.Unlock()
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return crypto.UnmarshalPrivateKey(data)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	key, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	data, err = crypto.MarshalPrivateKey(key)
+	if err != nil {
+		return nil, err
+	}
+	if err = durable.WriteFile(path, data, 0600); err != nil {
+		return nil, err
+	}
+	return key, nil
 }
 
 func AddrInfo(h corehost.Host) peer.AddrInfo {

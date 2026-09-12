@@ -1,3 +1,5 @@
+//go:build docker
+
 package integration
 
 import (
@@ -33,16 +35,23 @@ func TestMain(m *testing.M) {
 	dockerTestImage = "p2pbk-e2e:" + strings.ToLower(strings.ReplaceAll(time.Now().Format("150405.000000000"), ".", ""))
 	started := time.Now()
 	fmt.Fprintf(os.Stderr, "[docker-e2e] building %s\n", dockerTestImage)
-	cmd := exec.Command("docker", "build", "-t", dockerTestImage, "-f", "deploy/docker/Dockerfile", ".")
+	buildCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	cmd := exec.CommandContext(buildCtx, "docker", "build", "-t", dockerTestImage, "-f", "deploy/docker/Dockerfile", ".")
 	cmd.Dir = root
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
+		cancel()
 		fmt.Fprintf(os.Stderr, "[docker-e2e] build failed after %s: %v\n", time.Since(started).Round(time.Millisecond), err)
 		os.Exit(1)
 	}
+	cancel()
 	fmt.Fprintf(os.Stderr, "[docker-e2e] build finished in %s\n", time.Since(started).Round(time.Millisecond))
-	os.Exit(m.Run())
+	code := m.Run()
+	cleanup, cancelCleanup := context.WithTimeout(context.Background(), time.Minute)
+	_ = exec.CommandContext(cleanup, "docker", "image", "rm", dockerTestImage).Run()
+	cancelCleanup()
+	os.Exit(code)
 }
 
 type dockerClusterSpec struct {
@@ -73,6 +82,7 @@ type dockerCompose struct {
 }
 
 type nodeConfigOptions struct {
+	AnnounceAddrs        []string
 	BootstrapPeers       []string
 	PublicDiscoveryPeers []string
 	Discovery            string
@@ -137,7 +147,7 @@ func newDockerCluster(t *testing.T, ctx context.Context, spec dockerClusterSpec)
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		if os.Getenv(dockerE2ELogsEnv) == "1" {
+		if t.Failed() || os.Getenv(dockerE2ELogsEnv) == "1" {
 			cluster.docker.dumpLogs(cleanupCtx)
 		}
 		if out, err := cluster.docker.run(cleanupCtx, "down", "-v", "--remove-orphans"); err != nil {
@@ -196,6 +206,7 @@ func (c *dockerCluster) startRemoteDiscoveryNodes(ctx context.Context) {
 		name := fmt.Sprintf("node%d", i)
 		c.writeNodeConfig(name, nodeConfigOptions{
 			PublicDiscoveryPeers: []string{publicDiscoveryPeer},
+			AnnounceAddrs:        []string{fmt.Sprintf("/dns4/%s/tcp/4001", name)},
 			Discovery:            "remote",
 			OfferBytes:           10_000_000_000,
 			DataShards:           c.dataShards,
@@ -473,6 +484,7 @@ func dockerNodeConfig(dataDir string, opts nodeConfigOptions) map[string]any {
 			"offer_bytes":      opts.OfferBytes,
 		},
 		"network": map[string]any{
+			"announce_addrs": nonNilStrings(opts.AnnounceAddrs),
 			"listen_addrs": []string{
 				"/ip4/0.0.0.0/tcp/4001",
 			},

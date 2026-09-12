@@ -1,0 +1,111 @@
+name: Reliability
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reliability-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Contracts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      CGO_ENABLED: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.21.13'
+          cache-dependency-path: go.sum
+      - name: Verify and build
+        run: |
+          go vet ./...
+          go build ./cmd/...
+      - name: Execute contracts
+        run: go test -json ./... -count=1 -timeout=5m | tee test-results-fast.jsonl
+      - name: Require P0 contracts to execute
+        if: always()
+        run: python scripts/check-test-results.py --suite fast test-results-fast.jsonl
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: contracts-${{ matrix.os }}
+          path: test-results-fast.jsonl
+          retention-days: 14
+
+  race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.21.13'
+          cache-dependency-path: go.sum
+      - run: go test -race -json ./... -count=1 -timeout=8m | tee test-results-race.jsonl
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: race
+          path: test-results-race.jsonl
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.21.13'
+          cache-dependency-path: go.sum
+      - name: Docker must be available
+        run: docker info
+      - name: CLI backup, restore and real remote discovery
+        run: go test -tags=docker -json ./test/integration -run '^TestDocker' -count=1 -timeout=20m | tee test-results-docker.jsonl
+      - name: Require Docker contracts to execute
+        if: always()
+        run: python scripts/check-test-results.py --suite docker test-results-docker.jsonl
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: docker
+          path: test-results-docker.jsonl
+
+  stress:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.21.13'
+          cache-dependency-path: go.sum
+      - name: Repeated shuffled concurrency and networking contracts
+        run: go test -json ./internal/network/... ./internal/backend/p2p/... -shuffle=on -count=20 -timeout=15m | tee test-results-stress.jsonl
+      - name: Fuzz erasure reconstruction
+        run: go test ./internal/backend/p2p/erasure -run '^$' -fuzz '^FuzzErasureRecovery$' -fuzztime=60s -timeout=2m
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: stress-and-fuzz
+          path: |
+            test-results-stress.jsonl
+            internal/backend/p2p/erasure/testdata/fuzz/

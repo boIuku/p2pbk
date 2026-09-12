@@ -34,7 +34,7 @@ func TestRunOnceRecordsSuccessfulAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("blobserver New returned error: %v", err)
 	}
-	ref := blobserver.ShardRef{Owner: "owner", BlobID: "blob", Index: 1}
+	ref := blobserver.ShardRef{Owner: client.ID().String(), BlobID: "blob", Index: 1}
 	data := []byte("encrypted shard bytes")
 	putResp, err := server.PutShard(ctx, blobserver.PutShardRequest{Ref: ref, Data: data})
 	if err != nil {

@@ -164,6 +164,7 @@ func (e *Engine) backup(ctx context.Context, sourcePath, description string, pro
 	if err != nil {
 		return BackupResult{}, fmt.Errorf("open kopia writer: %w", err)
 	}
+	defer writer.Close(wctx)
 	uploader := snapshotfs.NewUploader(writer)
 	if progress != nil {
 		uploader.Progress = &backupProgress{progress: progress}

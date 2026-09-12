@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -28,7 +29,11 @@ func newBootstrapCommand() *cobra.Command {
 }
 
 func runBootstrap(ctx context.Context, cfg config.Config, out interface{ Write([]byte) (int, error) }) error {
-	host, err := p2phost.New(ctx, p2phost.Options{ListenAddrs: cfg.Network.ListenAddrs})
+	paths, err := cfg.Paths()
+	if err != nil {
+		return err
+	}
+	host, err := p2phost.New(ctx, p2phost.Options{ListenAddrs: cfg.Network.ListenAddrs, KeyPath: filepath.Join(paths.DataDir, "network.key"), EnableRelayService: true})
 	if err != nil {
 		return err
 	}

@@ -95,6 +95,8 @@ func openDaemonRuntime(ctx context.Context, cfg config.Config) (*daemonRuntime, 
 		return nil, fmt.Errorf("parse public discovery peer: %w", err)
 	}
 	host, err := p2phost.New(ctx, p2phost.Options{
+		AnnounceAddrs:      cfg.Network.AnnounceAddrs,
+		KeyPath:            filepath.Join(paths.DataDir, "network.key"),
 		ListenAddrs:        cfg.Network.ListenAddrs,
 		StaticRelays:       relayPeers,
 		EnableNATPortMap:   true,

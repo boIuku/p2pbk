@@ -157,7 +157,17 @@ func runRemoteDiscoveryRound(ctx context.Context, h corehost.Host, router Remote
 		notifee.emit(Event{Type: EventConnectFailed, Source: "remote-discovery", Err: err})
 		return
 	}
-	for info := range peers {
+	for {
+		var info peer.AddrInfo
+		select {
+		case <-roundCtx.Done():
+			return
+		case found, ok := <-peers:
+			if !ok {
+				return
+			}
+			info = found
+		}
 		if roundCtx.Err() != nil {
 			return
 		}

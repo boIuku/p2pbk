@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"time"
 
 	"p2pbk/internal/trust/identity"
@@ -15,6 +16,42 @@ type ShardRef struct {
 	Owner  string `json:"owner"`
 	BlobID string `json:"blob_id"`
 	Index  int    `json:"index"`
+}
+
+func IssueWithKey(key crypto.PrivKey, ref ShardRef, hash, storedBy string, at time.Time) (Receipt, error) {
+	r := Receipt{Ref: ref, Hash: hash, StoredBy: storedBy, IssuedAt: at.UTC()}
+	message, err := r.signingPayload()
+	if err != nil {
+		return Receipt{}, err
+	}
+	sig, err := key.Sign(message)
+	if err != nil {
+		return Receipt{}, err
+	}
+	r.Signature = base64.StdEncoding.EncodeToString(sig)
+	return r, nil
+}
+
+func VerifyWithKey(key crypto.PubKey, r Receipt) error {
+	if key == nil {
+		return errors.New("receipt peer key unavailable")
+	}
+	sig, err := base64.StdEncoding.DecodeString(r.Signature)
+	if err != nil {
+		return err
+	}
+	msg, err := r.signingPayload()
+	if err != nil {
+		return err
+	}
+	ok, err := key.Verify(msg, sig)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("receipt signature verification failed")
+	}
+	return nil
 }
 
 type Receipt struct {
