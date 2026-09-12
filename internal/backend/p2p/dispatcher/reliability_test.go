@@ -2,13 +2,16 @@ package dispatcher
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	p2phost "p2pbk/internal/network/host"
 	"p2pbk/internal/network/wire"
 	"p2pbk/internal/peer/blobserver"
 	"p2pbk/internal/peer/quota"
+	"p2pbk/internal/trust/receipts"
 )
 
 // P0-02: knowing a shard's complete address never grants ownership of it.
@@ -39,9 +42,6 @@ func TestShardAuthorizationAcrossOwners(t *testing.T) {
 	router := wire.NewRouter()
 	s.Register(router)
 	router.Register(h)
-	for _, client := range []wire.Client{wire.NewClient(a), wire.NewClient(b)} {
-		_ = client
-	}
 	if err = a.Connect(ctx, p2phost.AddrInfo(h)); err != nil {
 		t.Fatal(err)
 	}
@@ -82,6 +82,8 @@ func TestShardAuthorizationAcrossOwners(t *testing.T) {
 	}
 }
 
+// P0-02: an acknowledgement proves the contacted peer signed this exact
+// assignment. A valid signature for different bytes or ownership is insufficient.
 func TestUploadRejectsForgedOrMismatchedReceipt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -99,12 +101,54 @@ func TestUploadRejectsForgedOrMismatchedReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	router := wire.NewRouter()
-	router.Handle(blobserver.MethodPutShard, func(context.Context, wire.Request) (wire.Response, error) {
-		return wire.OK(blobserver.PutShardResponse{})
+	router.Handle(blobserver.MethodPutShard, func(_ context.Context, request wire.Request) (wire.Response, error) {
+		var req blobserver.PutShardRequest
+		if err := json.Unmarshal(request.Payload, &req); err != nil {
+			return wire.Response{}, err
+		}
+		if req.Ref.BlobID == "missing" {
+			return wire.OK(blobserver.PutShardResponse{})
+		}
+		ref := receipts.ShardRef{Owner: req.Ref.Owner, BlobID: req.Ref.BlobID, Index: req.Ref.Index}
+		hash, storedBy := req.Hash, h.ID().String()
+		key := h.Peerstore().PrivKey(h.ID())
+		switch req.Ref.BlobID {
+		case "wrong-owner":
+			ref.Owner = h.ID().String()
+		case "wrong-blob":
+			ref.BlobID = "another-blob"
+		case "wrong-index":
+			ref.Index++
+		case "wrong-hash":
+			hash = blobserver.Hash([]byte("different bytes"))
+		case "wrong-storage-peer":
+			storedBy = client.ID().String()
+		case "forged-signature":
+			key = client.Peerstore().PrivKey(client.ID())
+		}
+		receipt, err := receipts.IssueWithKey(key, ref, hash, storedBy, time.Now())
+		if err != nil {
+			return wire.Response{}, err
+		}
+		return wire.OK(blobserver.PutShardResponse{Receipt: receipt})
 	})
 	router.Register(h)
-	_, err = New(client).PutShard(ctx, h.ID(), blobserver.PutShardRequest{Ref: blobserver.ShardRef{Owner: client.ID().String(), BlobID: "blob", Index: 0}, Data: []byte("hello")})
-	if err == nil {
-		t.Fatal("peer acknowledged upload without a valid assignment receipt")
+	for _, name := range []string{"valid", "missing", "wrong-owner", "wrong-blob", "wrong-index", "wrong-hash", "wrong-storage-peer", "forged-signature"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := New(client).PutShard(ctx, h.ID(), blobserver.PutShardRequest{Ref: blobserver.ShardRef{Owner: client.ID().String(), BlobID: name, Index: 0}, Data: []byte("hello")})
+			if name == "valid" {
+				if err != nil {
+					t.Fatalf("valid acknowledgement rejected: %v", err)
+				}
+				return
+			}
+			want := "receipt does not match shard assignment"
+			if name == "forged-signature" {
+				want = "receipt signature verification failed"
+			}
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("want %q rejection, got %v", want, err)
+			}
+		})
 	}
 }

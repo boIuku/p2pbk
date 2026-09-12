@@ -1,0 +1,7 @@
+.git
+.codex
+.agents
+dist
+.test-results
+test-results*.jsonl
+**/__pycache__

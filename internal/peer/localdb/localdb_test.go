@@ -163,7 +163,8 @@ func TestPeerRecordRoundTripAndMerge(t *testing.T) {
 	if len(peers) != 1 {
 		t.Fatalf("peer count = %d, want 1", len(peers))
 	}
-	if peers[0].FirstSeen != first {
+	// SQL/JSON normalizes timezone metadata; the persisted instant must match.
+	if !peers[0].FirstSeen.Equal(first) {
 		t.Fatalf("first seen = %s, want %s", peers[0].FirstSeen, first)
 	}
 	if len(peers[0].Addrs) != 2 {

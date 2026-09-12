@@ -1,5 +1,9 @@
 # p2pbk reliability review and test plan
 
+Implementation update: the P0 regression suite and supporting fixes are described
+in [TESTING.md](TESTING.md). The review below records the original baseline;
+its statements about missing tests and behavior are historical.
+
 Reviewed 2026-09-12 at commit `9adba51`. This review follows the implementation, not just the README. Findings below are code observations and their implications; the missing failure scenarios have not been reproduced unless explicitly stated. This document proposes tests and automation; it does not implement product fixes or CI.
 
 **Assessment.** p2pbk has a working backup prototype and useful component tests. The current tests do not establish that remote backups survive realistic restarts, loss of the owner's computer, hostile peers, or extended outages. Before adding more features, establish a release contract: a reported successful backup remains recoverable after the declared failures, and every unrecoverable operation fails clearly within a bounded time.

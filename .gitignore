@@ -2,3 +2,6 @@
 dist/p2pbk.exe
 
 dist/
+test-results*.jsonl
+.test-results/
+__pycache__/

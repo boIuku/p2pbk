@@ -303,6 +303,8 @@ depending on remote discovery infrastructure.
 
 See the [reliability review and test plan](docs/RELIABILITY_TEST_PLAN.md) for
 current product risks, missing regression tests, and proposed CI release gates.
+See [Testing and recovery contracts](docs/TESTING.md) for the implemented P0 suite,
+CI checks, recovery bundles, and compatibility boundaries.
 
 Build the local binary on Windows:
 
@@ -317,16 +319,16 @@ Run the Go test suite:
 go test ./...
 ```
 
-Docker integration tests are driven from Go and run whenever the integration
-package is tested. Make sure Docker is running first:
+Docker integration tests are opt-in using the `docker` build tag. The normal
+suite runs without Docker. Make sure Docker is running for the container suite:
 
 ```powershell
-go test ./test/integration -run TestDocker -v
+go test -tags=docker ./test/integration -run TestDocker -v -count=1 -timeout=20m
 ```
 
 To print container logs even when the test passes:
 
 ```powershell
 $env:P2PBK_DOCKER_E2E_LOGS="1"
-go test ./test/integration -run TestDocker -v
+go test -tags=docker ./test/integration -run TestDocker -v -count=1 -timeout=20m
 ```
