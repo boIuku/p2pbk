@@ -24,7 +24,15 @@ type Options struct {
 	DB         *localdb.DB
 	Output     io.Writer
 	Logger     *logging.Logger
+	Backup     BackupFunc
 }
+
+type BackupResult struct {
+	ManifestID string
+	Source     string
+}
+
+type BackupFunc func(context.Context, config.Config, string, string, string, string) (BackupResult, error)
 
 func Start(ctx context.Context, opts Options) {
 	out := opts.Output
@@ -107,7 +115,14 @@ func RunDue(ctx context.Context, opts Options, interval time.Duration, now time.
 			OperationID: operationID,
 			Fields:      logging.Field{"root": root},
 		}, fmt.Sprintf("backup scheduler: starting backup for %s", root))
-		result, err := engine.Backup(ctx, root, "scheduled")
+		var result BackupResult
+		if opts.Backup != nil {
+			result, err = opts.Backup(ctx, opts.Config, opts.ConfigPath, password, root, "scheduled")
+		} else {
+			backup, backupErr := engine.Backup(ctx, root, "scheduled")
+			result = BackupResult{ManifestID: string(backup.ManifestID), Source: fmt.Sprint(backup.Source)}
+			err = backupErr
+		}
 		duration := time.Since(started)
 		if err != nil {
 			_ = opts.DB.PutSetting(LastFailureKey(root), []byte(now.Format(time.RFC3339Nano)+" "+err.Error()))
@@ -132,8 +147,8 @@ func RunDue(ctx context.Context, opts Options, interval time.Duration, now time.
 			DurationMS:  duration.Milliseconds(),
 			Fields: logging.Field{
 				"root":        root,
-				"snapshot_id": string(result.ManifestID),
-				"source":      fmt.Sprint(result.Source),
+				"snapshot_id": result.ManifestID,
+				"source":      result.Source,
 			},
 		}, fmt.Sprintf("backup scheduler: snapshot %s saved for %s", result.ManifestID, result.Source))
 	}

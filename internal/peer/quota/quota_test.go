@@ -34,3 +34,22 @@ func TestManagerRejectsOverLimit(t *testing.T) {
 		t.Fatalf("Reserve error = %v, want ErrExceeded", err)
 	}
 }
+
+func TestManagerEnforcesPerOwnerLimit(t *testing.T) {
+	m, err := NewWithLimits(10, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Reserve("alice", 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Reserve("alice", 1); !errors.Is(err, ErrExceeded) {
+		t.Fatalf("alice exceeded per-owner limit with error %v", err)
+	}
+	if err := m.Reserve("bob", 4); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Total(); got != 8 {
+		t.Fatalf("total = %d, want 8", got)
+	}
+}

@@ -3,6 +3,7 @@ package p2p
 import (
 	"context"
 	"errors"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/routing"
 	"sync"
 	"time"
@@ -57,13 +58,34 @@ func (b *DistributedBackend) PutShard(ctx context.Context, req blobserver.PutSha
 	if err != nil {
 		return blobserver.PutShardResponse{}, err
 	}
-	target := assignments[req.Ref.Index].Peer
-	resp, err := b.dispatcher.PutShard(ctx, target, req)
-	if err != nil {
+	candidates := []peer.ID{assignments[req.Ref.Index].Peer}
+	if strategy, ok := b.placement.(placement.CandidateStrategy); ok {
+		candidates = strategy.Candidates(req.Ref.Index)
+		if len(candidates) == 0 {
+			candidates = []peer.ID{assignments[req.Ref.Index].Peer}
+		}
+	}
+	var target peer.ID
+	var resp blobserver.PutShardResponse
+	var lastErr error
+	var succeeded bool
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return blobserver.PutShardResponse{}, err
+		}
+		target = candidate
+		resp, err = b.dispatcher.PutShard(ctx, target, req)
+		if err == nil {
+			succeeded = true
+			break
+		}
+		lastErr = err
 		if b.trustDB != nil {
 			_ = b.trustDB.RecordPeerFailure(target.String(), time.Now().UTC())
 		}
-		return blobserver.PutShardResponse{}, err
+	}
+	if !succeeded {
+		return blobserver.PutShardResponse{}, lastErr
 	}
 
 	if err := b.recordLocation(ctx, req.Ref.BlobID, locator.Location{Peer: target, Ref: req.Ref}); err != nil {

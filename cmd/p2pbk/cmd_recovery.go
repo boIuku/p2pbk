@@ -5,6 +5,7 @@ import (
 	"github.com/spf13/cobra"
 	"p2pbk/internal/recovery"
 	"p2pbk/internal/secrets"
+	"time"
 )
 
 func newRecoveryCommand() *cobra.Command {
@@ -18,6 +19,14 @@ func newRecoveryCommand() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "Recovered metadata: %s\nRun p2pbk --config %q repo init, then restore a snapshot.\n", path, path)
 		}
 		return err
+	}})
+	cmd.AddCommand(&cobra.Command{Use: "verify <bundle>", Args: cobra.ExactArgs(1), Short: "Authenticate a recovery checkpoint without mutating a repository", RunE: func(cmd *cobra.Command, args []string) error {
+		metadata, err := recovery.Verify(cmd.Context(), args[0], secrets.FromEnv())
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "checkpoint generation=%d exported=%s validation=%s snapshots=%d\n", metadata.Generation, metadata.ExportedAt.Format(time.RFC3339), metadata.ValidationResult, len(metadata.SnapshotIDs))
+		return nil
 	}})
 	return cmd
 }

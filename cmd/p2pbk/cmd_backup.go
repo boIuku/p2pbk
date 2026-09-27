@@ -27,13 +27,13 @@ func newBackupCommand() *cobra.Command {
 			password := secrets.FromEnv()
 			if len(args) == 1 && args[0] == "now" {
 				results, err := app.BackupAll(context.Background(), cfg, configPath, password, "manual")
-				if err != nil {
-					return err
-				}
 				for _, result := range results {
 					fmt.Fprintf(cmd.OutOrStdout(), "snapshot %s saved for %s\n", result.ManifestID, result.Source)
+					if result.CheckpointState == "pending" {
+						fmt.Fprintf(cmd.OutOrStdout(), "  recovery checkpoint pending: %s\n", result.CheckpointError)
+					}
 				}
-				return nil
+				return err
 			}
 			if len(args) < 2 {
 				return fmt.Errorf("usage: p2pbk backup now OR p2pbk backup <source> <description>")
@@ -49,6 +49,9 @@ func newBackupCommand() *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "snapshot %s saved for %s\n", result.ManifestID, result.Source)
+			if result.CheckpointState == "pending" {
+				fmt.Fprintf(cmd.OutOrStdout(), "recovery checkpoint pending: %s\n", result.CheckpointError)
+			}
 			return nil
 		},
 	}

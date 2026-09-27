@@ -30,6 +30,7 @@ const (
 
 var ErrShardNotFound = errors.New("shard not found")
 var ErrUnauthorized = errors.New("shard owner is not the authenticated peer")
+var ErrPeerNotApproved = errors.New("storage owner is not approved")
 
 type Capabilities struct {
 	Writable       bool  `json:"writable"`
@@ -43,6 +44,7 @@ type Server struct {
 	quota     *quota.Manager
 	identity  *identity.Identity
 	peerID    string
+	approvals ApprovalStore
 }
 
 type PutShardRequest struct {
@@ -82,9 +84,14 @@ func NewWithQuota(root string, quota *quota.Manager) (*Server, error) {
 }
 
 type Options struct {
-	Quota    *quota.Manager
-	Identity *identity.Identity
-	PeerID   string
+	Quota     *quota.Manager
+	Identity  *identity.Identity
+	PeerID    string
+	Approvals ApprovalStore
+}
+
+type ApprovalStore interface {
+	IsPeerApproved(string) (bool, error)
 }
 
 func NewWithOptions(root string, options Options) (*Server, error) {
@@ -94,7 +101,7 @@ func NewWithOptions(root string, options Options) (*Server, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("create blobserver root: %w", err)
 	}
-	s := &Server{root: root, quota: options.Quota, identity: options.Identity, peerID: options.PeerID, writeFile: durable.WriteFile}
+	s := &Server{root: root, quota: options.Quota, identity: options.Identity, peerID: options.PeerID, approvals: options.Approvals, writeFile: durable.WriteFile}
 	if s.quota != nil {
 		used := map[string]int64{}
 		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -260,11 +267,32 @@ func (s *Server) handlePutShard(ctx context.Context, req wire.Request) (wire.Res
 	if err := authorize(ctx, in.Ref); err != nil {
 		return wire.Response{}, err
 	}
+	if err := s.authorizeWrite(ctx, in.Ref); err != nil {
+		return wire.Response{}, err
+	}
 	out, err := s.PutShard(ctx, in)
 	if err != nil {
 		return wire.Response{}, err
 	}
 	return wire.OK(out)
+}
+
+func (s *Server) authorizeWrite(ctx context.Context, ref ShardRef) error {
+	if s.approvals == nil {
+		return nil
+	}
+	owner := wire.RemotePeer(ctx)
+	if owner == "" || owner.String() != ref.Owner {
+		return ErrUnauthorized
+	}
+	ok, err := s.approvals.IsPeerApproved(owner.String())
+	if err != nil {
+		return fmt.Errorf("check storage approval: %w", err)
+	}
+	if !ok {
+		return ErrPeerNotApproved
+	}
+	return nil
 }
 
 func (s *Server) handleGetShard(ctx context.Context, req wire.Request) (wire.Response, error) {

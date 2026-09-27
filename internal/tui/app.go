@@ -86,14 +86,16 @@ type model struct {
 type operationState struct {
 	cancel func()
 	events <-chan app.OperationEvent
+	id     string
 	event  app.OperationEvent
 }
 
 type pendingAction struct {
-	kind     string
-	root     string
-	snapshot string
-	target   string
+	kind           string
+	root           string
+	snapshot       string
+	target         string
+	allowOverwrite bool
 }
 
 type field struct {
@@ -305,6 +307,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncHomeComponents()
 		return m, nil
 	}
+	if cmd, handled := m.updateGlobalMessage(msg); handled {
+		return m, cmd
+	}
 	if m.picker != nil {
 		return m.updateDirPicker(msg)
 	}
@@ -312,13 +317,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateForm(msg)
 	}
 	switch msg := msg.(type) {
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		if m.loading {
-			return m, cmd
-		}
-		return m, nil
 	case tea.KeyMsg:
 		if next, cmd, handled := m.updateHomeKey(msg); handled {
 			return next, cmd
@@ -329,6 +327,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		}
+	}
+	return m, nil
+}
+
+// updateGlobalMessage runs before forms and directory pickers so background
+// status, progress, completion, cancellation, and refresh events cannot be
+// stranded by modal input.
+func (m *model) updateGlobalMessage(msg tea.Msg) (tea.Cmd, bool) {
+	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return cmd, true
 	case statusMsg:
 		m.loading = false
 		m.status = msg.status
@@ -342,12 +353,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.repoDetailsRequested && m.password != "" && m.status.Repository == "initialized" {
 			m.repoDetailsRequested = false
 			m.repoDetailsLoading = true
-			return m, fetchRepositoryDetails(m.cfg, m.configPath, m.password)
+			return fetchRepositoryDetails(m.cfg, m.configPath, m.password), true
 		}
 		if m.repoDetailsRequested {
 			m.repoDetailsRequested = false
 			m.repoDetailsLoading = false
 		}
+		return nil, true
 	case repoDetailsMsg:
 		m.repoDetailsLoading = false
 		if msg.err != nil {
@@ -359,6 +371,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.folderBackup = min(m.folderBackup, max(0, len(m.folderBackups())-1))
 		m.syncHomeComponents()
+		return nil, true
 	case actionMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -371,14 +384,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messageUntil = time.Now().Add(2500 * time.Millisecond)
 			m.addActivity(msg.message)
 		}
-		return m, tea.Batch(fetchStatus(m.cfg, m.configPath, m.password), clearMessage())
+		return tea.Batch(fetchStatus(m.cfg, m.configPath, m.password), clearMessage()), true
 	case configChangedMsg:
 		if msg.err != nil {
 			m.err = msg.err
 			m.message = msg.err.Error()
 			m.messageUntil = time.Now().Add(2500 * time.Millisecond)
 			m.addActivity("error: " + msg.err.Error())
-			return m, clearMessage()
+			return clearMessage(), true
 		}
 		m.cfg = msg.cfg
 		m.configPath = msg.configPath
@@ -386,12 +399,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.message = msg.message
 		m.messageUntil = time.Now().Add(2500 * time.Millisecond)
 		m.addActivity(msg.message)
-		return m, tea.Batch(fetchStatus(m.cfg, m.configPath, m.password), clearMessage())
+		return tea.Batch(fetchStatus(m.cfg, m.configPath, m.password), clearMessage()), true
 	case opMsg:
 		event := app.OperationEvent(msg)
-		if m.op != nil {
-			m.op.event = event
+		if m.op == nil {
+			return nil, true
 		}
+		if m.op.id == "" {
+			m.op.id = event.ID
+		}
+		if event.ID == "" || event.ID != m.op.id {
+			return nil, true
+		}
+		m.op.event = event
 		if event.Done {
 			m.op = nil
 			if event.Err != nil {
@@ -405,15 +425,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.messageUntil = time.Now().Add(2500 * time.Millisecond)
 				m.addActivity(event.Message)
 			}
-			return m, tea.Batch(fetchStatus(m.cfg, m.configPath, m.password), clearMessage())
+			return tea.Batch(fetchStatus(m.cfg, m.configPath, m.password), clearMessage()), true
 		}
-		return m, waitOperation(m.op.events)
+		return waitOperation(m.op.events), true
 	case clearMessageMsg:
 		if !m.messageUntil.IsZero() && time.Now().After(m.messageUntil) {
 			m.message = ""
 			m.err = nil
 			m.messageUntil = time.Time{}
 		}
+		return nil, true
 	case time.Time:
 		if !m.messageUntil.IsZero() && time.Now().After(m.messageUntil) {
 			m.message = ""
@@ -421,11 +442,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messageUntil = time.Time{}
 		}
 		if m.op == nil {
-			return m, tea.Batch(fetchStatus(m.cfg, m.configPath, m.password), tick())
+			return tea.Batch(fetchStatus(m.cfg, m.configPath, m.password), tick()), true
 		}
-		return m, tick()
+		return tick(), true
 	}
-	return m, nil
+	return nil, false
 }
 
 func (m model) View() string {
@@ -1699,17 +1720,18 @@ func (m *model) startBackup(root string) tea.Cmd {
 	return waitOperation(events)
 }
 
-func (m *model) startRestore(snapshotID, target string) tea.Cmd {
+func (m *model) startRestore(snapshotID, target string, allowOverwrite bool) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	events := make(chan app.OperationEvent, 8)
 	m.op = &operationState{cancel: cancel, events: events}
 	m.addActivity("restore started: " + snapshotID)
 	go app.RestoreSnapshotWithEvents(ctx, app.RestoreRequest{
-		Config:     m.cfg,
-		ConfigPath: m.configPath,
-		Password:   m.password,
-		Snapshot:   snapshotID,
-		Target:     target,
+		Config:         m.cfg,
+		ConfigPath:     m.configPath,
+		Password:       m.password,
+		Snapshot:       snapshotID,
+		Target:         target,
+		AllowOverwrite: allowOverwrite,
 	}, events)
 	return waitOperation(events)
 }

@@ -62,6 +62,7 @@ func newRootCommand() *cobra.Command {
 	cmd.AddCommand(newDaemonCommand())
 	cmd.AddCommand(newBootstrapCommand())
 	cmd.AddCommand(newRecoveryCommand())
+	cmd.AddCommand(newServiceCommand())
 
 	cmd.AddCommand(&cobra.Command{
 		Use:   "version",

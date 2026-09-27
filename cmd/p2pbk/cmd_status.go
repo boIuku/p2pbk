@@ -46,6 +46,10 @@ func newStatusCommand() *cobra.Command {
 			}
 			fmt.Fprintf(out, "Backup schedule: %s\n", status.Schedule)
 			fmt.Fprintf(out, "Retention: %s\n", status.Retention)
+			fmt.Fprintf(out, "Recovery checkpoint: %s\n", status.RecoveryCheckpointState)
+			if status.RecoveryCheckpointError != "" {
+				fmt.Fprintf(out, "Recovery checkpoint error: %s\n", status.RecoveryCheckpointError)
+			}
 			fmt.Fprintf(out, "Max protected data: %d bytes\n", status.MaxProtectedBytes)
 			if status.Repository == "initialized" {
 				fmt.Fprintf(out, "Repository: initialized (%s)\n", status.RepositoryPath)

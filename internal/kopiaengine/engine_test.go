@@ -58,6 +58,49 @@ func TestEngineBackupRestoreLocalP2PBKStorage(t *testing.T) {
 	}
 }
 
+func TestRestoreRefusesOverwriteByDefault(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "node")
+	configPath := filepath.Join(dataDir, "config.yaml")
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestConfig(t, configPath, dataDir)
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(root, "source")
+	if err := os.MkdirAll(src, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	engine := New(configPath, cfg, "repo-password")
+	if _, err := engine.Backup(ctx, src, "restore safety"); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(root, "restore")
+	if err := os.MkdirAll(dst, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "existing.txt"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Restore(ctx, "latest", dst); err == nil {
+		t.Fatal("restore overwrote a non-empty destination by default")
+	}
+	data, err := os.ReadFile(filepath.Join(dst, "existing.txt"))
+	if err != nil || string(data) != "keep" {
+		t.Fatalf("refused restore changed destination: %q %v", data, err)
+	}
+	if _, err := engine.RestoreWithOptions(ctx, "latest", dst, RestoreOptions{AllowOverwrite: true}, nil); err != nil {
+		t.Fatalf("explicit overwrite restore failed: %v", err)
+	}
+}
+
 func findFile(t *testing.T, root, name string) string {
 	t.Helper()
 

@@ -18,6 +18,9 @@ import (
 type Snapshot struct {
 	ID               string
 	Source           string
+	SourcePath       string
+	SourceHost       string
+	SourceUser       string
 	Description      string
 	StartTime        string
 	Files            int
@@ -49,28 +52,31 @@ type PeerStatus struct {
 }
 
 type Status struct {
-	ConfigPath        string
-	DataDir           string
-	StoreDir          string
-	CacheDir          string
-	LocalDB           string
-	LocalDBStatus     string
-	StorageBytes      int64
-	StorageMode       string
-	Repository        string
-	RepositoryPath    string
-	RepositoryError   string
-	Schedule          string
-	Retention         string
-	MaxProtectedBytes int64
-	DataShards        int
-	ParityShards      int
-	Roots             []RootStatus
-	Snapshots         []Snapshot
-	Peers             []PeerStatus
-	ReceiptCount      int
-	AuditCount        int
-	CollectedAt       time.Time
+	ConfigPath              string
+	DataDir                 string
+	StoreDir                string
+	CacheDir                string
+	LocalDB                 string
+	LocalDBStatus           string
+	StorageBytes            int64
+	StorageMode             string
+	Repository              string
+	RepositoryPath          string
+	RepositoryError         string
+	Schedule                string
+	Retention               string
+	MaxProtectedBytes       int64
+	DataShards              int
+	ParityShards            int
+	Roots                   []RootStatus
+	Snapshots               []Snapshot
+	Peers                   []PeerStatus
+	ReceiptCount            int
+	AuditCount              int
+	RecoveryCheckpointState string
+	RecoveryCheckpointError string
+	CollectedAt             time.Time
+	receiptCoverage         map[string]map[int]struct{}
 }
 
 func CollectStatus(ctx context.Context, cfg config.Config, configPath, password string) (Status, error) {
@@ -88,21 +94,23 @@ func collectStatus(ctx context.Context, cfg config.Config, configPath, password 
 	}
 
 	status := Status{
-		ConfigPath:        configPath,
-		DataDir:           paths.DataDir,
-		StoreDir:          paths.StoreDir,
-		CacheDir:          paths.CacheDir,
-		LocalDB:           paths.LocalDB,
-		LocalDBStatus:     "available",
-		StorageBytes:      dirSize(paths.StoreDir),
-		StorageMode:       "local only",
-		Repository:        "not initialized",
-		Schedule:          cfg.Backup.Schedule,
-		Retention:         cfg.Backup.Retention,
-		MaxProtectedBytes: cfg.Backup.MaxBytes,
-		DataShards:        cfg.Backup.DataShards,
-		ParityShards:      cfg.Backup.ParityShards,
-		CollectedAt:       time.Now(),
+		ConfigPath:              configPath,
+		DataDir:                 paths.DataDir,
+		StoreDir:                paths.StoreDir,
+		CacheDir:                paths.CacheDir,
+		LocalDB:                 paths.LocalDB,
+		LocalDBStatus:           "available",
+		StorageBytes:            dirSize(paths.StoreDir),
+		StorageMode:             "local only",
+		Repository:              "not initialized",
+		Schedule:                cfg.Backup.Schedule,
+		Retention:               cfg.Backup.Retention,
+		MaxProtectedBytes:       cfg.Backup.MaxBytes,
+		DataShards:              cfg.Backup.DataShards,
+		ParityShards:            cfg.Backup.ParityShards,
+		CollectedAt:             time.Now(),
+		receiptCoverage:         map[string]map[int]struct{}{},
+		RecoveryCheckpointState: checkpointInitialState(cfg),
 	}
 
 	engine := kopiaengine.New(configPath, cfg, password)
@@ -126,6 +134,12 @@ func collectStatus(ctx context.Context, cfg config.Config, configPath, password 
 	var healthyPeers int
 	if db, err := localdb.Open(paths.LocalDB); err == nil {
 		lastSuccess, lastFailure = backupHistory(db, cfg.Backup.Roots)
+		if value, err := db.GetSetting("recovery_checkpoint_state"); err == nil && len(value) > 0 {
+			status.RecoveryCheckpointState = string(value)
+		}
+		if value, err := db.GetSetting("recovery_checkpoint_error"); err == nil && len(value) > 0 {
+			status.RecoveryCheckpointError = string(value)
+		}
 		if stats, err := db.ListPeerStats(); err == nil {
 			for _, stat := range stats {
 				if stat.Status == "healthy" {
@@ -145,6 +159,13 @@ func collectStatus(ctx context.Context, cfg config.Config, configPath, password 
 		}
 		if receipts, err := db.ListShardReceipts(); err == nil {
 			status.ReceiptCount = len(receipts)
+			for _, receipt := range receipts {
+				blob := receipt.Receipt.Ref.BlobID
+				if _, ok := status.receiptCoverage[blob]; !ok {
+					status.receiptCoverage[blob] = map[int]struct{}{}
+				}
+				status.receiptCoverage[blob][receipt.Receipt.Ref.Index] = struct{}{}
+			}
 		}
 		if audits, err := db.ListAuditHistory(""); err == nil {
 			status.AuditCount = len(audits)
@@ -154,7 +175,7 @@ func collectStatus(ctx context.Context, cfg config.Config, configPath, password 
 		status.LocalDBStatus = "unavailable: " + err.Error()
 	}
 
-	if len(cfg.Network.BootstrapPeers) > 0 || len(cfg.Network.PublicDiscoveryPeers) > 0 || len(status.Peers) > 0 {
+	if cfg.Storage.Mode == "remote" || persistedStorageMode(paths.DataDir) == "remote" || len(cfg.Network.BootstrapPeers) > 0 || len(cfg.Network.PublicDiscoveryPeers) > 0 || len(status.Peers) > 0 {
 		status.StorageMode = "distributed"
 	}
 
@@ -172,6 +193,13 @@ func collectStatus(ctx context.Context, cfg config.Config, configPath, password 
 	}
 
 	return status, nil
+}
+
+func checkpointInitialState(cfg config.Config) string {
+	if cfg.Recovery.ExternalPath == "" {
+		return "absent"
+	}
+	return "pending"
 }
 
 func LoadRepositoryDetails(ctx context.Context, cfg config.Config, configPath, password string) ([]Snapshot, MaintenanceStatus, error) {
@@ -208,6 +236,9 @@ func appSnapshots(snapshots []kopiaengine.SnapshotInfo) []Snapshot {
 		out = append(out, Snapshot{
 			ID:               string(snapshot.ID),
 			Source:           fmt.Sprint(snapshot.Source),
+			SourcePath:       snapshot.Source.Path,
+			SourceHost:       snapshot.Source.Host,
+			SourceUser:       snapshot.Source.UserName,
 			Description:      snapshot.Description,
 			StartTime:        snapshot.StartTime,
 			Files:            int(snapshot.Stats.TotalFileCount),
@@ -248,12 +279,9 @@ func pathKind(path string) string {
 }
 
 func countSnapshots(snapshots []Snapshot, root string) int {
-	clean := filepath.Clean(root)
-	base := filepath.Base(clean)
 	count := 0
 	for _, snapshot := range snapshots {
-		source := filepath.Clean(snapshot.Source)
-		if strings.Contains(source, clean) || strings.Contains(source, base) {
+		if snapshot.SourcePath != "" && samePath(snapshot.SourcePath, root) {
 			count++
 		}
 	}
@@ -271,12 +299,18 @@ func protection(status Status, root string, healthyPeers int) string {
 		return "local only"
 	}
 	if status.ReceiptCount == 0 {
-		return "offload unknown"
+		return "unknown"
 	}
-	if healthyPeers >= status.DataShards {
-		return "protected"
+	for _, indexes := range status.receiptCoverage {
+		if len(indexes) < status.DataShards {
+			return "degraded"
+		}
 	}
-	return "degraded"
+	// A receipt-only observation is saved data, not protected data. The
+	// protected label additionally requires fresh verification and an external
+	// recovery checkpoint, which this status collector does not fabricate.
+	_ = healthyPeers
+	return "saved"
 }
 
 func protectionNote(status Status, healthyPeers int) string {
@@ -284,9 +318,17 @@ func protectionNote(status Status, healthyPeers int) string {
 		return "no known storage peers"
 	}
 	if status.ReceiptCount == 0 {
-		return "no shard receipts recorded"
+		return "no per-blob shard evidence recorded"
 	}
-	return fmt.Sprintf("%d healthy peers, %d receipts", healthyPeers, status.ReceiptCount)
+	return fmt.Sprintf("%d receipts across %d blob(s); recovery checkpoint=%s; end-to-end verification is pending", status.ReceiptCount, len(status.receiptCoverage), status.RecoveryCheckpointState)
+}
+
+func persistedStorageMode(dataDir string) string {
+	data, err := os.ReadFile(filepath.Join(dataDir, "storage.mode"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func dirSize(root string) int64 {

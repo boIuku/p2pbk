@@ -1,7 +1,9 @@
 package secrets
 
 import (
+	"errors"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -11,6 +13,24 @@ var envMu sync.Mutex
 
 func FromEnv() string {
 	return os.Getenv(PasswordEnv)
+}
+
+func FromEnvOrFile(path string) (string, error) {
+	if value := FromEnv(); value != "" {
+		return value, nil
+	}
+	if path == "" {
+		return "", nil
+	}
+	data, err := ReadCredential(path)
+	if err != nil {
+		return "", err
+	}
+	value := strings.TrimSpace(string(data))
+	if value == "" {
+		return "", errors.New("service credential is empty")
+	}
+	return value, nil
 }
 
 func Env(password string) []string {

@@ -11,8 +11,9 @@ import (
 )
 
 type restoreOptions struct {
-	source string
-	target string
+	source    string
+	target    string
+	overwrite bool
 }
 
 func newRestoreCommand() *cobra.Command {
@@ -27,11 +28,12 @@ func newRestoreCommand() *cobra.Command {
 			}
 			cfg := currentConfig()
 			result, err := app.RestoreSnapshot(context.Background(), app.RestoreRequest{
-				Config:     cfg,
-				ConfigPath: currentConfigPath(cfg),
-				Password:   secrets.FromEnv(),
-				Snapshot:   args[0],
-				Target:     args[1],
+				Config:         cfg,
+				ConfigPath:     currentConfigPath(cfg),
+				Password:       secrets.FromEnv(),
+				Snapshot:       args[0],
+				Target:         args[1],
+				AllowOverwrite: opts.overwrite,
 			})
 			if err != nil {
 				return err
@@ -43,6 +45,7 @@ func newRestoreCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&opts.source, "from", "", "source path (default: args[0])")
 	cmd.Flags().StringVar(&opts.target, "to", "", "target path (default: args[1])")
+	cmd.Flags().BoolVar(&opts.overwrite, "overwrite", false, "allow replacing conflicting paths in an existing target")
 
 	return cmd
 }

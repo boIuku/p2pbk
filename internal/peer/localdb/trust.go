@@ -1,6 +1,7 @@
 package localdb
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,10 +57,16 @@ func (db *DB) StoreShardReceipt(record ShardReceiptRecord) error {
 	if err != nil {
 		return fmt.Errorf("marshal shard receipt: %w", err)
 	}
+	key := receiptKey(record.PeerID, record.Receipt.Ref)
+	var existing int
+	existsErr := tx.QueryRow(`SELECT 1 FROM shard_receipts WHERE key = ?`, key).Scan(&existing)
+	if existsErr != nil && !errors.Is(existsErr, sql.ErrNoRows) {
+		return existsErr
+	}
 	if _, err := tx.Exec(
 		`INSERT INTO shard_receipts(key, peer_id, stored_at, data) VALUES(?, ?, ?, ?)
-		 ON CONFLICT(key) DO UPDATE SET peer_id = excluded.peer_id, stored_at = excluded.stored_at, data = excluded.data`,
-		receiptKey(record.PeerID, record.Receipt.Ref),
+			 ON CONFLICT(key) DO UPDATE SET peer_id = excluded.peer_id, stored_at = excluded.stored_at, data = excluded.data`,
+		key,
 		record.PeerID,
 		timeKey(record.StoredAt),
 		data,
@@ -68,7 +75,9 @@ func (db *DB) StoreShardReceipt(record ShardReceiptRecord) error {
 	}
 	if err := upsertPeerInTx(tx, record.PeerID, func(peer *PeerRecord) {
 		peer.LastSeen = record.StoredAt
-		peer.StoredShards++
+		if existsErr != nil {
+			peer.StoredShards++
+		}
 	}); err != nil {
 		return err
 	}

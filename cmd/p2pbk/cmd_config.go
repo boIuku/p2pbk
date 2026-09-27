@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -25,6 +26,10 @@ func newConfigCommand() *cobra.Command {
 			v := viper.GetViper()
 
 			if opts.getKey != "" {
+				if opts.getKey == "trust.identity_passphrase" || strings.Contains(strings.ToLower(opts.getKey), "password") || strings.Contains(strings.ToLower(opts.getKey), "secret") {
+					fmt.Fprintln(cmd.OutOrStdout(), "<redacted>")
+					return nil
+				}
 				val := v.Get(opts.getKey)
 				if val == nil {
 					return fmt.Errorf("setting %q not found", opts.getKey)
@@ -66,6 +71,7 @@ func newConfigCommand() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "Store dir: %s\n", summary.StoreDir)
 			fmt.Fprintf(cmd.OutOrStdout(), "Cache dir: %s\n", summary.CacheDir)
 			fmt.Fprintf(cmd.OutOrStdout(), "Offer bytes: %d\n", summary.OfferBytes)
+			fmt.Fprintf(cmd.OutOrStdout(), "Per-owner offer bytes: %d\n", summary.PerOwnerOfferBytes)
 			fmt.Fprintf(cmd.OutOrStdout(), "Protocol: %s\n", summary.ProtocolID)
 			fmt.Fprintf(cmd.OutOrStdout(), "Min peers: %d\n", summary.MinPeers)
 			fmt.Fprintf(cmd.OutOrStdout(), "Discovery: %s\n", summary.Discovery)
@@ -77,6 +83,8 @@ func newConfigCommand() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "Max protected data: %d bytes\n", summary.MaxProtectedBytes)
 			fmt.Fprintf(cmd.OutOrStdout(), "Schedule: %s\n", summary.Schedule)
 			fmt.Fprintf(cmd.OutOrStdout(), "Retention: %s\n", summary.Retention)
+			fmt.Fprintf(cmd.OutOrStdout(), "Recovery external path: %s\n", summary.RecoveryExternalPath)
+			fmt.Fprintf(cmd.OutOrStdout(), "Recovery generations: %d\n", summary.RecoveryRetainGenerations)
 			fmt.Fprintf(cmd.OutOrStdout(), "Data shards: %d\n", summary.DataShards)
 			fmt.Fprintf(cmd.OutOrStdout(), "Parity shards: %d\n", summary.ParityShards)
 			fmt.Fprintf(cmd.OutOrStdout(), "Challenge interval: %s\n", summary.ChallengeInterval)

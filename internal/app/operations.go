@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"p2pbk/internal/config"
+	"p2pbk/internal/durable"
 	"p2pbk/internal/kopiaengine"
+	"p2pbk/internal/peer/localdb"
+	"p2pbk/internal/recovery"
 )
 
 type BackupRequest struct {
@@ -23,16 +27,19 @@ type BackupRequest struct {
 }
 
 type BackupResult struct {
-	ManifestID string
-	Source     string
+	ManifestID      string
+	Source          string
+	CheckpointState string
+	CheckpointError string
 }
 
 type RestoreRequest struct {
-	Config     config.Config
-	ConfigPath string
-	Password   string
-	Snapshot   string
-	Target     string
+	Config         config.Config
+	ConfigPath     string
+	Password       string
+	Snapshot       string
+	Target         string
+	AllowOverwrite bool
 }
 
 type RestoreResult struct {
@@ -58,7 +65,7 @@ type OperationEvent struct {
 	Err        error
 }
 
-func BackupRoot(ctx context.Context, req BackupRequest) (BackupResult, error) {
+func BackupRoot(ctx context.Context, req BackupRequest) (result BackupResult, err error) {
 	if req.ConfigPath == "" {
 		return BackupResult{}, errors.New("p2pbk config file is required; pass --config or run p2pbk init first")
 	}
@@ -78,16 +85,28 @@ func BackupRoot(ctx context.Context, req BackupRequest) (BackupResult, error) {
 	} else if !info.IsDir() {
 		return BackupResult{}, fmt.Errorf("backup source %q is not a directory", req.Source)
 	}
+	if err := enforceProtectedByteBudget(ctx, req.Config, req.Source); err != nil {
+		return BackupResult{}, err
+	}
+	if err := EnforceCacheBudget(ctx, req.Config); err != nil {
+		return BackupResult{}, err
+	}
 	if req.Description == "" {
 		req.Description = "manual"
 	}
-
-	engine := kopiaengine.New(req.ConfigPath, req.Config, req.Password)
-	result, err := engine.Backup(ctx, req.Source, req.Description)
+	guard, err := beginOperation(ctx, req.Config, req.ConfigPath, "backup", req.Source, "")
 	if err != nil {
 		return BackupResult{}, err
 	}
-	return BackupResult{ManifestID: string(result.ManifestID), Source: fmt.Sprint(result.Source)}, nil
+	defer func() { guard.finish(err) }()
+
+	engine := kopiaengine.New(req.ConfigPath, req.Config, req.Password)
+	backup, err := engine.Backup(ctx, req.Source, req.Description)
+	if err != nil {
+		return BackupResult{}, err
+	}
+	checkpointState, checkpointErr := publishCheckpoint(ctx, req, engine, string(backup.ManifestID))
+	return BackupResult{ManifestID: string(backup.ManifestID), Source: fmt.Sprint(backup.Source), CheckpointState: checkpointState, CheckpointError: errorText(checkpointErr)}, nil
 }
 
 func BackupAll(ctx context.Context, cfg config.Config, configPath, password, description string) ([]BackupResult, error) {
@@ -95,6 +114,7 @@ func BackupAll(ctx context.Context, cfg config.Config, configPath, password, des
 		return nil, errors.New("no backup roots configured; run p2pbk init --dir <path> or set backup.roots")
 	}
 	results := make([]BackupResult, 0, len(cfg.Backup.Roots))
+	var failures []error
 	for _, root := range NormalizeRootList(cfg.Backup.Roots) {
 		result, err := BackupRoot(ctx, BackupRequest{
 			Config:      cfg,
@@ -104,14 +124,15 @@ func BackupAll(ctx context.Context, cfg config.Config, configPath, password, des
 			Description: description,
 		})
 		if err != nil {
-			return results, err
+			failures = append(failures, fmt.Errorf("backup root %q: %w", root, err))
+			continue
 		}
 		results = append(results, result)
 	}
-	return results, nil
+	return results, errors.Join(failures...)
 }
 
-func RestoreSnapshot(ctx context.Context, req RestoreRequest) (RestoreResult, error) {
+func RestoreSnapshot(ctx context.Context, req RestoreRequest) (result RestoreResult, err error) {
 	if req.ConfigPath == "" {
 		return RestoreResult{}, errors.New("p2pbk config file is required; pass --config or run p2pbk init first")
 	}
@@ -124,16 +145,21 @@ func RestoreSnapshot(ctx context.Context, req RestoreRequest) (RestoreResult, er
 	if req.Target == "" {
 		return RestoreResult{}, errors.New("restore target is required")
 	}
+	guard, err := beginOperation(ctx, req.Config, req.ConfigPath, "restore", "", req.Snapshot)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	defer func() { guard.finish(err) }()
 
 	engine := kopiaengine.New(req.ConfigPath, req.Config, req.Password)
-	result, err := engine.Restore(ctx, req.Snapshot, req.Target)
+	restored, err := engine.RestoreWithOptions(ctx, req.Snapshot, req.Target, kopiaengine.RestoreOptions{AllowOverwrite: req.AllowOverwrite}, nil)
 	if err != nil {
 		return RestoreResult{}, err
 	}
 	return RestoreResult{
-		ManifestID: string(result.ManifestID),
-		Files:      int(result.Stats.RestoredFileCount),
-		Dirs:       int(result.Stats.RestoredDirCount),
+		ManifestID: string(restored.ManifestID),
+		Files:      int(restored.Stats.RestoredFileCount),
+		Dirs:       int(restored.Stats.RestoredDirCount),
 	}, nil
 }
 
@@ -165,9 +191,24 @@ func BackupRootWithEvents(ctx context.Context, req BackupRequest, events chan<- 
 		sendImmediateOperationError(ctx, events, id, "backup", "backing up", started, fmt.Sprintf("backup source %q is not a directory", req.Source))
 		return
 	}
+	if err := enforceProtectedByteBudget(ctx, req.Config, req.Source); err != nil {
+		sendImmediateOperationError(ctx, events, id, "backup", "backing up", started, err.Error())
+		return
+	}
+	if err := EnforceCacheBudget(ctx, req.Config); err != nil {
+		sendImmediateOperationError(ctx, events, id, "backup", "backing up", started, err.Error())
+		return
+	}
 	if req.Description == "" {
 		req.Description = "manual"
 	}
+	guard, lockErr := beginOperation(ctx, req.Config, req.ConfigPath, "backup", req.Source, "")
+	if lockErr != nil {
+		sendImmediateOperationError(ctx, events, id, "backup", "backing up", started, lockErr.Error())
+		return
+	}
+	var operationErr error
+	defer func() { guard.finish(operationErr) }()
 	total := dirBytes(req.Source)
 	emitter := newOperationEmitter(ctx, events, operationEventBase{
 		ID:         id,
@@ -195,10 +236,137 @@ func BackupRootWithEvents(ctx context.Context, req BackupRequest, events chan<- 
 	lastProgress := last
 	lastMu.Unlock()
 	if err != nil {
+		operationErr = err
 		emitter.send(true, lastProgress.BytesDone, lastProgress.BytesTotal, "", err, true)
 		return
 	}
-	emitter.send(true, total, total, fmt.Sprintf("snapshot %s saved for %s", result.ManifestID, result.Source), nil, true)
+	checkpointState, checkpointErr := publishCheckpoint(ctx, req, engine, string(result.ManifestID))
+	message := fmt.Sprintf("snapshot %s saved for %s", result.ManifestID, result.Source)
+	if checkpointState == "pending" {
+		message += "; recovery checkpoint pending"
+	}
+	// The backup commit is still durable. A checkpoint warning is persisted and
+	// surfaced in the event/status state without turning committed data into a
+	// false backup failure.
+	_ = checkpointErr
+	emitter.send(true, total, total, message, nil, true)
+}
+
+func publishCheckpoint(ctx context.Context, req BackupRequest, engine *kopiaengine.Engine, manifestID string) (string, error) {
+	if req.Config.Recovery.ExternalPath == "" {
+		return "absent", nil
+	}
+	info, err := os.Stat(req.Config.Recovery.ExternalPath)
+	if err != nil {
+		return "pending", recordCheckpointState(req.Config, "pending", err)
+	}
+	if !info.IsDir() {
+		err := fmt.Errorf("recovery external path %q is not a directory", req.Config.Recovery.ExternalPath)
+		return "pending", recordCheckpointState(req.Config, "pending", err)
+	}
+	ids := []string{manifestID}
+	if snapshots, listErr := engine.ListSnapshots(ctx); listErr == nil {
+		ids = ids[:0]
+		for _, snapshot := range snapshots {
+			ids = append(ids, string(snapshot.ID))
+		}
+		if len(ids) == 0 {
+			return "pending", recordCheckpointState(req.Config, "pending", errors.New("cannot publish an empty recovery checkpoint"))
+		}
+	} else if manifestID == "" {
+		return "pending", recordCheckpointState(req.Config, "pending", fmt.Errorf("list snapshots for recovery checkpoint: %w", listErr))
+	}
+	if err := engine.PinSnapshots(ctx, ids, "p2pbk-recovery"); err != nil {
+		return "pending", recordCheckpointState(req.Config, "pending", err)
+	}
+	generation := time.Now().UTC().UnixNano()
+	metadata := recovery.CheckpointMetadata{Generation: generation, SnapshotIDs: ids}
+	generationPath := filepath.Join(req.Config.Recovery.ExternalPath, fmt.Sprintf("p2pbk-recovery-%d.age", generation))
+	if err := recovery.ExportWithMetadata(ctx, req.Config, req.Password, generationPath, metadata); err != nil {
+		return "pending", recordCheckpointState(req.Config, "pending", err)
+	}
+	verified, err := recovery.Verify(ctx, generationPath, req.Password)
+	if err != nil {
+		return "pending", recordCheckpointState(req.Config, "pending", fmt.Errorf("validate recovery checkpoint: %w", err))
+	}
+	if verified.Generation != generation || verified.ValidationResult == "" {
+		return "pending", recordCheckpointState(req.Config, "pending", errors.New("recovery checkpoint metadata validation did not confirm the exported generation"))
+	}
+	generationData, err := os.ReadFile(generationPath)
+	if err != nil {
+		return "pending", recordCheckpointState(req.Config, "pending", err)
+	}
+	destination := filepath.Join(req.Config.Recovery.ExternalPath, "p2pbk-recovery.age")
+	if err := durable.WriteFile(destination, generationData, 0o600); err != nil {
+		return "pending", recordCheckpointState(req.Config, "pending", err)
+	}
+	if err := pruneRecoveryGenerations(req.Config.Recovery.ExternalPath, req.Config.Recovery.RetainGenerations); err != nil {
+		_ = recordCheckpointState(req.Config, "current", err)
+		return "current", err
+	}
+	if err := recordCheckpointState(req.Config, "current", nil); err != nil {
+		return "pending", err
+	}
+	return "current", nil
+}
+
+func pruneRecoveryGenerations(dir string, retain int) error {
+	if retain <= 0 {
+		return errors.New("recovery retain generations must be positive")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	type generationFile struct {
+		name string
+		id   int64
+	}
+	var files []generationFile
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "p2pbk-recovery-") || !strings.HasSuffix(entry.Name(), ".age") {
+			continue
+		}
+		value := strings.TrimSuffix(strings.TrimPrefix(entry.Name(), "p2pbk-recovery-"), ".age")
+		var generation int64
+		if _, scanErr := fmt.Sscan(value, &generation); scanErr != nil || generation <= 0 {
+			continue
+		}
+		files = append(files, generationFile{name: entry.Name(), id: generation})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].id > files[j].id })
+	for i := retain; i < len(files); i++ {
+		if err := os.Remove(filepath.Join(dir, files[i].name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+func recordCheckpointState(cfg config.Config, state string, checkpointErr error) error {
+	paths, err := cfg.Paths()
+	if err != nil {
+		return err
+	}
+	db, err := localdb.Open(paths.LocalDB)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if err := db.PutSetting("recovery_checkpoint_state", []byte(state)); err != nil {
+		return err
+	}
+	if checkpointErr == nil {
+		return db.PutSetting("recovery_checkpoint_error", nil)
+	}
+	return db.PutSetting("recovery_checkpoint_error", []byte(checkpointErr.Error()))
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func RestoreSnapshotWithEvents(ctx context.Context, req RestoreRequest, events chan<- OperationEvent) {
@@ -220,6 +388,13 @@ func RestoreSnapshotWithEvents(ctx context.Context, req RestoreRequest, events c
 		sendImmediateOperationError(ctx, events, id, "restore", "restoring", started, "restore target is required")
 		return
 	}
+	guard, lockErr := beginOperation(ctx, req.Config, req.ConfigPath, "restore", "", req.Snapshot)
+	if lockErr != nil {
+		sendImmediateOperationError(ctx, events, id, "restore", "restoring", started, lockErr.Error())
+		return
+	}
+	var operationErr error
+	defer func() { guard.finish(operationErr) }()
 	emitter := newOperationEmitter(ctx, events, operationEventBase{
 		ID:        id,
 		Kind:      "restore",
@@ -233,7 +408,7 @@ func RestoreSnapshotWithEvents(ctx context.Context, req RestoreRequest, events c
 	engine := kopiaengine.New(req.ConfigPath, req.Config, req.Password)
 	var last kopiaengine.Progress
 	var lastMu sync.Mutex
-	result, err := engine.RestoreWithProgress(ctx, req.Snapshot, req.Target, func(progress kopiaengine.Progress) {
+	result, err := engine.RestoreWithOptions(ctx, req.Snapshot, req.Target, kopiaengine.RestoreOptions{AllowOverwrite: req.AllowOverwrite}, func(progress kopiaengine.Progress) {
 		lastMu.Lock()
 		last = progress
 		lastMu.Unlock()
@@ -243,6 +418,7 @@ func RestoreSnapshotWithEvents(ctx context.Context, req RestoreRequest, events c
 	lastProgress := last
 	lastMu.Unlock()
 	if err != nil {
+		operationErr = err
 		emitter.send(true, lastProgress.BytesDone, lastProgress.BytesTotal, "", err, true)
 		return
 	}

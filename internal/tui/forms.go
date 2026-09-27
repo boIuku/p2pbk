@@ -34,6 +34,9 @@ func (m model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch key.String() {
 	case "esc":
+		if m.form.kind == "password" {
+			m.pending = nil
+		}
 		m.form = nil
 		return m, nil
 	case "ctrl+b":
@@ -41,6 +44,7 @@ func (m model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.picker = m.newPickerForActiveField()
 		}
 	case "ctrl+c":
+		m.pending = nil
 		return m, tea.Quit
 	case "up", "shift+tab":
 		if m.form.active > 0 {
@@ -172,6 +176,7 @@ func restoreForm(snapshotID string) *formState {
 		fields: []field{
 			{label: "Backup", value: snapshotID},
 			{label: "Target", value: defaultRestoreTarget(snapshotID)},
+			{label: "Overwrite", value: "no"},
 		},
 	}
 }
@@ -250,7 +255,7 @@ func (m *model) submitForm(form *formState) tea.Cmd {
 		case "backup":
 			return m.startBackup(pending.root)
 		case "restore":
-			return m.startRestore(pending.snapshot, pending.target)
+			return m.startRestore(pending.snapshot, pending.target, pending.allowOverwrite)
 		default:
 			return func() tea.Msg {
 				return actionMsg{message: "p2pbk password saved for this session"}
@@ -323,12 +328,16 @@ func (m *model) submitForm(form *formState) tea.Cmd {
 	case "restore":
 		snapshotID := form.fields[0].value
 		target := form.fields[1].value
+		allowOverwrite, err := parseBoolField("overwrite", form.fields[2].value)
+		if err != nil {
+			return func() tea.Msg { return actionMsg{err: err} }
+		}
 		if m.password == "" {
-			m.pending = &pendingAction{kind: "restore", snapshot: snapshotID, target: target}
+			m.pending = &pendingAction{kind: "restore", snapshot: snapshotID, target: target, allowOverwrite: allowOverwrite}
 			m.form = passwordForm()
 			return nil
 		}
-		return m.startRestore(snapshotID, target)
+		return m.startRestore(snapshotID, target, allowOverwrite)
 	case "remove":
 		path := form.fields[0].value
 		confirmation := form.fields[1].value

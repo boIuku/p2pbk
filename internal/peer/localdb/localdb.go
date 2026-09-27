@@ -2,6 +2,7 @@ package localdb
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -111,6 +112,29 @@ func (db *DB) init() error {
 			data BLOB NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS audit_history_peer_checked_idx ON audit_history(peer_id, checked_at)`,
+		`CREATE TABLE IF NOT EXISTS approvals (
+			peer_id TEXT PRIMARY KEY,
+			approved INTEGER NOT NULL,
+			updated_at TEXT NOT NULL,
+			data BLOB NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS approvals_approved_idx ON approvals(approved)`,
+		`CREATE TABLE IF NOT EXISTS operations (
+			id TEXT PRIMARY KEY,
+			kind TEXT NOT NULL,
+			state TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			data BLOB NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS operations_updated_at_idx ON operations(updated_at)`,
+		`CREATE TABLE IF NOT EXISTS repair_jobs (
+			key TEXT PRIMARY KEY,
+			state TEXT NOT NULL,
+			next_attempt_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			data BLOB NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS repair_jobs_state_attempt_idx ON repair_jobs(state, next_attempt_at)`,
 	}
 	for _, stmt := range schema {
 		if _, err := db.conn.Exec(stmt); err != nil {
@@ -119,6 +143,11 @@ func (db *DB) init() error {
 	}
 	return nil
 }
+
+// Small wrappers keep approval serialization in one package and make the
+// storage contract explicit without exposing the database connection.
+var jsonMarshal = json.Marshal
+var jsonUnmarshal = json.Unmarshal
 
 func isSQLiteFormatError(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "not a database")

@@ -2,8 +2,10 @@ package audit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"time"
 
 	corehost "github.com/libp2p/go-libp2p/core/host"
@@ -24,8 +26,14 @@ type Result struct {
 	Ref      blobserver.ShardRef
 	Success  bool
 	Err      error
+	Failure  string
 	Duration time.Duration
 }
+
+var (
+	ErrShardUnavailable = errors.New("shard unavailable")
+	ErrShardCorrupt     = errors.New("shard corrupt")
+)
 
 type Summary struct {
 	Checked   int
@@ -76,8 +84,9 @@ func RunOnce(ctx context.Context, opts Options) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
-	if opts.Limit > 0 && len(receipts) > opts.Limit {
-		receipts = receipts[:opts.Limit]
+	selected, err := fairAuditSelection(opts.DB, receipts, opts.Limit)
+	if err != nil {
+		return Summary{}, err
 	}
 
 	dispatch := dispatcher.New(opts.Host)
@@ -87,7 +96,7 @@ func RunOnce(ctx context.Context, opts Options) (Summary, error) {
 	}
 
 	var summary Summary
-	for _, receipt := range receipts {
+	for _, receipt := range selected {
 		summary.Checked++
 		started := time.Now()
 		err := auditReceipt(ctx, dispatch, receipt, opts.ShardTimeout)
@@ -104,10 +113,21 @@ func RunOnce(ctx context.Context, opts Options) (Summary, error) {
 		} else {
 			summary.Succeeded++
 		}
+		failure := ""
+		if errors.Is(err, ErrShardCorrupt) {
+			failure = "corrupt"
+		} else if errors.Is(err, ErrShardUnavailable) {
+			failure = "unavailable"
+		}
+		if err != nil {
+			_ = opts.DB.FailRepairJob(receipt.PeerID, blobRef(receipt.Receipt.Ref), err.Error(), now().UTC())
+		} else {
+			_ = opts.DB.CompleteRepairJob(receipt.PeerID, blobRef(receipt.Receipt.Ref), now().UTC())
+		}
 		if writeErr := opts.DB.RecordAudit(record); writeErr != nil && err == nil {
 			return summary, writeErr
 		}
-		result := Result{PeerID: receipt.PeerID, Ref: blobRef(receipt.Receipt.Ref), Success: err == nil, Err: err, Duration: duration}
+		result := Result{PeerID: receipt.PeerID, Ref: blobRef(receipt.Receipt.Ref), Success: err == nil, Err: err, Failure: failure, Duration: duration}
 		if opts.Logger != nil {
 			writeStructuredResult(opts.Logger, result)
 		} else if opts.Output != nil {
@@ -115,6 +135,41 @@ func RunOnce(ctx context.Context, opts Options) (Summary, error) {
 		}
 	}
 	return summary, nil
+}
+
+func fairAuditSelection(db *localdb.DB, receipts []localdb.ShardReceiptRecord, limit int) ([]localdb.ShardReceiptRecord, error) {
+	sort.Slice(receipts, func(i, j int) bool {
+		return auditReceiptKey(receipts[i]) < auditReceiptKey(receipts[j])
+	})
+	if len(receipts) == 0 || limit <= 0 || limit >= len(receipts) {
+		if len(receipts) > 0 {
+			return receipts, db.PutSetting("audit_cursor", []byte(auditReceiptKey(receipts[len(receipts)-1])))
+		}
+		return receipts, nil
+	}
+	cursor, err := db.GetSetting("audit_cursor")
+	if err != nil {
+		return nil, err
+	}
+	start := 0
+	if len(cursor) > 0 {
+		for i, receipt := range receipts {
+			if auditReceiptKey(receipt) > string(cursor) {
+				start = i
+				break
+			}
+			start = (i + 1) % len(receipts)
+		}
+	}
+	selected := make([]localdb.ShardReceiptRecord, 0, limit)
+	for i := 0; i < limit; i++ {
+		selected = append(selected, receipts[(start+i)%len(receipts)])
+	}
+	return selected, db.PutSetting("audit_cursor", []byte(auditReceiptKey(selected[len(selected)-1])))
+}
+
+func auditReceiptKey(record localdb.ShardReceiptRecord) string {
+	return fmt.Sprintf("%s|%s|%s|%d", record.PeerID, record.Receipt.Ref.Owner, record.Receipt.Ref.BlobID, record.Receipt.Ref.Index)
 }
 
 func Start(ctx context.Context, opts Options, interval time.Duration) {
@@ -160,10 +215,10 @@ func auditReceipt(ctx context.Context, dispatch *dispatcher.Dispatcher, receipt 
 	defer cancel()
 	got, err := dispatch.GetShard(shardCtx, target, blobserver.GetShardRequest{Ref: blobRef(receipt.Receipt.Ref)})
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrShardUnavailable, err)
 	}
 	if got.Hash != receipt.Receipt.Hash {
-		return fmt.Errorf("shard hash mismatch: got %s want %s", got.Hash, receipt.Receipt.Hash)
+		return fmt.Errorf("%w: got %s want %s", ErrShardCorrupt, got.Hash, receipt.Receipt.Hash)
 	}
 	return nil
 }

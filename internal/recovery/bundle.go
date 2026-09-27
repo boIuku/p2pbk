@@ -26,14 +26,26 @@ const MaxBundleBytes = 64 << 20
 var files = []string{"network.key", "storage.mode", "manifests.json", "locators.json"}
 
 type bundle struct {
-	Version int
-	Config  config.Config
-	Files   map[string][]byte
+	Version  int
+	Config   config.Config
+	Files    map[string][]byte
+	Metadata CheckpointMetadata
+}
+
+type CheckpointMetadata struct {
+	Generation       int64     `json:"generation"`
+	SnapshotIDs      []string  `json:"snapshot_ids"`
+	ExportedAt       time.Time `json:"exported_at"`
+	ValidationResult string    `json:"validation_result"`
 }
 
 // Export checkpoints a quiescent metadata transaction. Refresh the external
 // bundle after backups: it guarantees recovery only through this checkpoint.
 func Export(ctx context.Context, cfg config.Config, password, path string) error {
+	return ExportWithMetadata(ctx, cfg, password, path, CheckpointMetadata{})
+}
+
+func ExportWithMetadata(ctx context.Context, cfg config.Config, password, path string, metadata CheckpointMetadata) error {
 	if password == "" {
 		return errors.New("recovery password required")
 	}
@@ -49,8 +61,22 @@ func Export(ctx context.Context, cfg config.Config, password, path string) error
 	if !ok {
 		return errors.New("recovery metadata locked")
 	}
-	defer lock.Unlock()
-	b := bundle{Version: 1, Config: cfg, Files: map[string][]byte{}}
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			_ = lock.Unlock()
+		}
+	}()
+	if metadata.Generation == 0 {
+		metadata.Generation = time.Now().UTC().UnixNano()
+	}
+	if metadata.ExportedAt.IsZero() {
+		metadata.ExportedAt = time.Now().UTC()
+	}
+	if metadata.ValidationResult == "" {
+		metadata.ValidationResult = "pending"
+	}
+	b := bundle{Version: 1, Config: cfg, Files: map[string][]byte{}, Metadata: metadata}
 	for _, name := range files {
 		data, err := os.ReadFile(filepath.Join(paths.DataDir, name))
 		if err != nil {
@@ -77,7 +103,15 @@ func Export(ctx context.Context, cfg config.Config, password, path string) error
 	for _, p := range peers {
 		b.Config.Network.BootstrapPeers = append(b.Config.Network.BootstrapPeers, p.Addrs...)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := lock.Unlock(); err != nil {
+		return err
+	}
+	unlocked = true
 	b.Config.Trust.IdentityPassphrase = ""
+	b.Metadata.ValidationResult = "validated-metadata"
 	plain, err := json.Marshal(b)
 	if err != nil {
 		return err
@@ -100,7 +134,49 @@ func Export(ctx context.Context, cfg config.Config, password, path string) error
 	if err = w.Close(); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return durable.WriteFile(path, out.Bytes(), 0600)
+}
+
+// Verify authenticates and parses a checkpoint without opening or mutating a
+// live repository. It deliberately reports only bundle scope and metadata.
+func Verify(ctx context.Context, path, password string) (CheckpointMetadata, error) {
+	if password == "" {
+		return CheckpointMetadata{}, errors.New("recovery password required")
+	}
+	if err := ctx.Err(); err != nil {
+		return CheckpointMetadata{}, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return CheckpointMetadata{}, err
+	}
+	defer f.Close()
+	id, err := age.NewScryptIdentity(password)
+	if err != nil {
+		return CheckpointMetadata{}, err
+	}
+	r, err := age.Decrypt(f, id)
+	if err != nil {
+		return CheckpointMetadata{}, fmt.Errorf("unlock recovery bundle: %w", err)
+	}
+	data, err := io.ReadAll(io.LimitReader(r, MaxBundleBytes+1))
+	if err != nil {
+		return CheckpointMetadata{}, err
+	}
+	if len(data) > MaxBundleBytes {
+		return CheckpointMetadata{}, errors.New("recovery bundle too large")
+	}
+	var b bundle
+	if err := json.Unmarshal(data, &b); err != nil {
+		return CheckpointMetadata{}, fmt.Errorf("parse recovery bundle: %w", err)
+	}
+	if err := validateBundle(b); err != nil {
+		return CheckpointMetadata{}, err
+	}
+	return b.Metadata, nil
 }
 
 // Import creates a NEW data directory. It never merges into or replaces a live
@@ -136,21 +212,10 @@ func Import(ctx context.Context, path, password, target string) (string, error) 
 	if err = json.Unmarshal(data, &b); err != nil {
 		return "", err
 	}
-	if b.Version != 1 {
-		return "", errors.New("unsupported recovery bundle version")
+	if err := validateBundle(b); err != nil {
+		return "", err
 	}
 	required := append(append([]string{}, files...), "identity.age")
-	if len(b.Files) != len(required) {
-		return "", errors.New("invalid recovery bundle file set")
-	}
-	for _, name := range required {
-		if len(b.Files[name]) == 0 {
-			return "", fmt.Errorf("recovery metadata missing %s", name)
-		}
-	}
-	if string(b.Files["storage.mode"]) != "remote" {
-		return "", errors.New("bundle is not a remote repository")
-	}
 	target, err = filepath.Abs(target)
 	if err != nil {
 		return "", err
@@ -190,4 +255,23 @@ func Import(ctx context.Context, path, password, target string) (string, error) 
 		return "", err
 	}
 	return cfgPath, nil
+}
+
+func validateBundle(b bundle) error {
+	if b.Version != 1 {
+		return errors.New("unsupported recovery bundle version")
+	}
+	required := append(append([]string{}, files...), "identity.age")
+	if len(b.Files) != len(required) {
+		return errors.New("invalid recovery bundle file set")
+	}
+	for _, name := range required {
+		if len(b.Files[name]) == 0 {
+			return fmt.Errorf("recovery metadata missing %s", name)
+		}
+	}
+	if string(b.Files["storage.mode"]) != "remote" {
+		return errors.New("bundle is not a remote repository")
+	}
+	return nil
 }

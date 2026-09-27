@@ -80,6 +80,26 @@ func newRepoCommand() *cobra.Command {
 		},
 	})
 
+	maintenanceRun := &cobra.Command{
+		Use:   "run",
+		Short: "Apply retention and run repository maintenance",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := currentConfig()
+			result, err := app.RunMaintenance(context.Background(), cfg, currentConfigPath(cfg), secrets.FromEnv())
+			if err != nil {
+				return friendlyRepositoryError(err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "maintenance complete; deleted_snapshots: %d\n", result.DeletedSnapshots)
+			return nil
+		},
+	}
+	for _, child := range cmd.Commands() {
+		if child.Use == "maintenance" {
+			child.AddCommand(maintenanceRun)
+			break
+		}
+	}
+
 	return cmd
 }
 

@@ -9,17 +9,28 @@ import (
 var ErrExceeded = errors.New("quota exceeded")
 
 type Manager struct {
-	mu        sync.Mutex
-	limit     int64
-	used      map[string]int64
-	updatedAt time.Time
+	mu            sync.Mutex
+	limit         int64
+	perOwnerLimit int64
+	used          map[string]int64
+	updatedAt     time.Time
 }
 
 func New(limit int64) (*Manager, error) {
+	return NewWithLimits(limit, 0)
+}
+
+// NewWithLimits applies both a node-wide offered-storage limit and an optional
+// per-owner limit. A zero per-owner limit means that only the global limit is
+// enforced. Existing committed files remain readable when a limit is lowered.
+func NewWithLimits(limit, perOwnerLimit int64) (*Manager, error) {
 	if limit < 0 {
 		return nil, errors.New("limit must be non-negative")
 	}
-	return &Manager{limit: limit, used: map[string]int64{}}, nil
+	if perOwnerLimit < 0 {
+		return nil, errors.New("per-owner limit must be non-negative")
+	}
+	return &Manager{limit: limit, perOwnerLimit: perOwnerLimit, used: map[string]int64{}}, nil
 }
 
 func (m *Manager) Reserve(owner string, delta int64) error {
@@ -34,6 +45,9 @@ func (m *Manager) Reserve(owner string, delta int64) error {
 	defer m.mu.Unlock()
 
 	if delta > m.limit-m.total() {
+		return ErrExceeded
+	}
+	if m.perOwnerLimit > 0 && delta > m.perOwnerLimit-m.used[owner] {
 		return ErrExceeded
 	}
 	m.used[owner] += delta
@@ -87,6 +101,10 @@ func (m *Manager) Total() int64 {
 
 func (m *Manager) Limit() int64 {
 	return m.limit
+}
+
+func (m *Manager) PerOwnerLimit() int64 {
+	return m.perOwnerLimit
 }
 
 func (m *Manager) total() int64 {

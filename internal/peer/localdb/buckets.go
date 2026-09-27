@@ -8,6 +8,8 @@ const (
 	BucketOwnedBlobs    Bucket = "owned_blobs"
 	BucketShardReceipts Bucket = "shard_receipts"
 	BucketAuditHistory  Bucket = "audit_history"
+	BucketApprovals     Bucket = "approvals"
+	BucketOperations    Bucket = "operations"
 )
 
 var RequiredBuckets = []Bucket{
@@ -16,4 +18,6 @@ var RequiredBuckets = []Bucket{
 	BucketOwnedBlobs,
 	BucketShardReceipts,
 	BucketAuditHistory,
+	BucketApprovals,
+	BucketOperations,
 }

@@ -31,3 +31,40 @@ func TestRoundRobinRejectsNoPeers(t *testing.T) {
 		t.Fatalf("NewRoundRobin error = %v, want ErrNoPeers", err)
 	}
 }
+
+func TestPlacementHonorsFailureDomains(t *testing.T) {
+	peers := []peer.ID{"a", "b", "c", "d"}
+	domains := map[peer.ID]string{"a": "host-a", "b": "host-b", "c": "host-c", "d": "host-d"}
+	strategy, err := NewFailureDomainRoundRobin(peers, domains, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignments, err := strategy.Place(9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, assignment := range assignments {
+		counts[domains[assignment.Peer]]++
+	}
+	for domain, count := range counts {
+		if count > 3 {
+			t.Fatalf("domain %s received %d shards, want at most 3", domain, count)
+		}
+	}
+	if _, err := strategy.Place(13); err == nil {
+		t.Fatal("Place(13) unexpectedly accepted a one-domain-loss-unsafe layout")
+	}
+}
+
+func TestPlacementRejectsInsufficientFailureDomains(t *testing.T) {
+	peers := []peer.ID{"a", "b"}
+	domains := map[peer.ID]string{"a": "host-a", "b": "host-b"}
+	strategy, err := NewFailureDomainRoundRobin(peers, domains, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := strategy.Place(9); err == nil {
+		t.Fatal("Place unexpectedly accepted two domains for nine shards")
+	}
+}

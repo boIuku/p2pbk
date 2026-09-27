@@ -191,3 +191,42 @@ func TestRecordPeerFailure(t *testing.T) {
 		t.Fatalf("peers = %+v", peers)
 	}
 }
+
+func TestApprovalAndRevocationSurviveRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "local.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ApprovePeer("owner-a", "machine-a", "enrolled", time.Unix(10, 0)); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := db.IsPeerApproved("owner-a")
+	if err != nil || !ok {
+		t.Fatalf("approved = %v, err=%v", ok, err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ok, err = db.IsPeerApproved("owner-a")
+	if err != nil || !ok {
+		t.Fatalf("approval did not survive restart: %v %v", ok, err)
+	}
+	if err := db.RevokePeer("owner-a", "retired", time.Unix(20, 0)); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = db.IsPeerApproved("owner-a")
+	if err != nil || ok {
+		t.Fatalf("revocation not enforced: %v %v", ok, err)
+	}
+	record, err := db.GetApproval("owner-a")
+	if err != nil || record == nil || record.FailureDomain != "machine-a" {
+		t.Fatalf("approval record = %+v, err=%v", record, err)
+	}
+}

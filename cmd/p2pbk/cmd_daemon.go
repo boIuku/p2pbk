@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/spf13/cobra"
 
+	"p2pbk/internal/app"
 	"p2pbk/internal/audit"
 	"p2pbk/internal/config"
 	"p2pbk/internal/logging"
@@ -41,6 +43,7 @@ type daemonDiscoveryServices struct {
 }
 
 func newDaemonCommand() *cobra.Command {
+	var credentialFile string
 	cmd := &cobra.Command{
 		Use:    "daemon",
 		Short:  "Run the p2pbk background service",
@@ -50,9 +53,17 @@ func newDaemonCommand() *cobra.Command {
 			defer stop()
 
 			cfg := currentConfig()
+			password, err := secrets.FromEnvOrFile(credentialFile)
+			if err != nil {
+				return err
+			}
+			if password != "" {
+				_ = os.Setenv(secrets.PasswordEnv, password)
+			}
 			return runDaemon(ctx, cfg, cmd.OutOrStdout())
 		},
 	}
+	cmd.Flags().StringVar(&credentialFile, "credential-file", "", "OS-protected service credential file (never printed)")
 	return cmd
 }
 
@@ -160,7 +171,7 @@ func startDaemonNetworking(ctx context.Context, cfg config.Config, runtime *daem
 }
 
 func registerDaemonServices(cfg config.Config, runtime *daemonRuntime, logger *logging.Logger) error {
-	q, err := quota.New(cfg.Storage.OfferBytes)
+	q, err := quota.NewWithLimits(cfg.Storage.OfferBytes, cfg.Storage.PerOwnerOfferBytes)
 	if err != nil {
 		return err
 	}
@@ -169,9 +180,10 @@ func registerDaemonServices(cfg config.Config, runtime *daemonRuntime, logger *l
 		logger.Warn("identity_unavailable", "identity unavailable for signed receipts", "identity_unavailable", identityErr, nil)
 	}
 	blobServer, err := blobserver.NewWithOptions(runtime.paths.StoreDir, blobserver.Options{
-		Quota:    q,
-		Identity: id,
-		PeerID:   runtime.host.ID().String(),
+		Quota:     q,
+		Identity:  id,
+		PeerID:    runtime.host.ID().String(),
+		Approvals: runtime.db,
 	})
 	if err != nil {
 		return err
@@ -302,6 +314,10 @@ func startDaemonJobs(ctx context.Context, cfg config.Config, runtime *daemonRunt
 		ConfigPath: currentConfigPath(cfg),
 		DB:         runtime.db,
 		Logger:     logger.WithComponent("scheduler"),
+		Backup: func(ctx context.Context, cfg config.Config, configPath, password, root, description string) (scheduler.BackupResult, error) {
+			result, err := app.BackupRoot(ctx, app.BackupRequest{Config: cfg, ConfigPath: configPath, Password: password, Source: root, Description: description})
+			return scheduler.BackupResult{ManifestID: result.ManifestID, Source: result.Source}, err
+		},
 	})
 	if interval, err := time.ParseDuration(cfg.Trust.ChallengeInterval); err == nil && interval > 0 {
 		audit.Start(ctx, audit.Options{Config: cfg, Host: runtime.host, DB: runtime.db, Logger: logger.WithComponent("audit")}, interval)

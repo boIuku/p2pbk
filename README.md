@@ -301,8 +301,11 @@ depending on remote discovery infrastructure.
 
 ## Development
 
-See the [reliability review and test plan](docs/RELIABILITY_TEST_PLAN.md) for
-current product risks, missing regression tests, and proposed CI release gates.
+See the [reliable MVP implementation plan](docs/MVP_IMPLEMENTATION_PLAN.md) for
+ordered milestones, reusable AI-agent prompts, whole-product acceptance criteria,
+and release gates, including CLI, TUI, services, recovery, and both binaries.
+The [reliability review and test plan](docs/RELIABILITY_TEST_PLAN.md) records the
+historical baseline and original proposed tests.
 See [Testing and recovery contracts](docs/TESTING.md) for the implemented P0 suite,
 CI checks, recovery bundles, and compatibility boundaries.
 

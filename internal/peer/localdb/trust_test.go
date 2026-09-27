@@ -38,6 +38,17 @@ func TestShardReceiptAndAuditHistory(t *testing.T) {
 	if len(receiptList) != 1 || receiptList[0].PeerID != "peer-a" || receiptList[0].Receipt.Ref.BlobID != ref.BlobID {
 		t.Fatalf("receipt list = %+v", receiptList)
 	}
+	if err := db.StoreShardReceipt(ShardReceiptRecord{
+		PeerID:   "peer-a",
+		Receipt:  receiptList[0].Receipt,
+		StoredAt: time.Unix(4, 0),
+	}); err != nil {
+		t.Fatalf("replaying receipt returned error: %v", err)
+	}
+	peers, err := db.ListPeers()
+	if err != nil || len(peers) != 1 || peers[0].StoredShards != 1 {
+		t.Fatalf("replayed receipt double-counted: peers=%+v err=%v", peers, err)
+	}
 
 	if err := db.RecordAudit(AuditRecord{PeerID: "peer-a", Ref: ref, Success: true, CheckedAt: time.Unix(2, 0)}); err != nil {
 		t.Fatalf("RecordAudit success returned error: %v", err)

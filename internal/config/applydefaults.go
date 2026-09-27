@@ -21,6 +21,7 @@ func applyDefaults(v *viper.Viper) {
 	v.SetDefault("storage.cache_dir", defaultDataDir+"/cache")
 	v.SetDefault("storage.cache_size_bytes", int64(1<<30))
 	v.SetDefault("storage.offer_bytes", int64(10<<30))
+	v.SetDefault("storage.per_owner_offer_bytes", int64(0))
 	v.SetDefault("storage.mode", "auto")
 
 	v.SetDefault("network.listen_addrs", []string{"/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic-v1"})
@@ -47,4 +48,8 @@ func applyDefaults(v *viper.Viper) {
 	v.SetDefault("trust.reputation_window", 30*24*time.Hour)
 	v.SetDefault("trust.challenge_max_length", int64(64*1024))
 	v.SetDefault("trust.identity_passphrase", "")
+
+	v.SetDefault("recovery.external_path", "")
+	v.SetDefault("recovery.retain_generations", 2)
+	v.SetDefault("recovery.retry_interval", "1h")
 }

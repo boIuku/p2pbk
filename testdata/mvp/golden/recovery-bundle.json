@@ -1,0 +1,11 @@
+{
+  "Version": 1,
+  "Config": "<SANITIZED_CONFIG>",
+  "Files": {
+    "network.key": "<ENCRYPTED_NETWORK_KEY>",
+    "storage.mode": "remote",
+    "manifests.json": "<MANIFEST_METADATA>",
+    "locators.json": "<LOCATOR_METADATA>",
+    "identity.age": "<ENCRYPTED_IDENTITY>"
+  }
+}

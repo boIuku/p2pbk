@@ -162,7 +162,18 @@ func openDistributedStorageWithConnectedPeers(cfg config.Config, h corehost.Host
 	}
 	var strategy placement.Strategy = unavailablePlacement{have: len(writable), want: minPeers}
 	if len(writable) >= minPeers {
-		strategy, _ = placement.NewScoredRoundRobin(writable, peerScores(store))
+		scores := peerScores(store)
+		domains := peerFailureDomains(store)
+		if len(domains) > 0 {
+			candidate, domainErr := placement.NewFailureDomainRoundRobin(writable, domains, cfg.Backup.ParityShards)
+			if domainErr == nil {
+				strategy = candidate
+			} else {
+				strategy = unavailablePlacement{have: len(domains), want: (cfg.Backup.DataShards + cfg.Backup.ParityShards + cfg.Backup.ParityShards - 1) / cfg.Backup.ParityShards}
+			}
+		} else {
+			strategy, _ = placement.NewScoredRoundRobin(writable, scores)
+		}
 	}
 	backend, err := p2p.NewDistributedBackend(dispatcher.New(h), strategy, loc, p2p.WithTrustDB(store))
 	if err != nil {
@@ -206,6 +217,27 @@ func peerScores(store *localdb.DB) map[peer.ID]float64 {
 			continue
 		}
 		out[id] = stat.Score
+	}
+	return out
+}
+
+func peerFailureDomains(store *localdb.DB) map[peer.ID]string {
+	out := map[peer.ID]string{}
+	if store == nil {
+		return out
+	}
+	approvals, err := store.ListApprovals()
+	if err != nil {
+		return out
+	}
+	for _, approval := range approvals {
+		if approval.FailureDomain == "" || approval.RevokedAt.After(approval.ApprovedAt) {
+			continue
+		}
+		id, err := peer.Decode(approval.PeerID)
+		if err == nil {
+			out[id] = approval.FailureDomain
+		}
 	}
 	return out
 }

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,28 +14,31 @@ import (
 )
 
 type ConfigSummary struct {
-	Path                     string
-	DataDir                  string
-	StoreDir                 string
-	CacheDir                 string
-	OfferBytes               int64
-	ProtocolID               string
-	MinPeers                 int
-	Discovery                string
-	LocalDiscoveryService    string
-	RemoteDiscoveryNamespace string
-	RemoteDiscoveryInterval  string
-	PublicDiscoveryPeers     []string
-	ProtectedRoots           []string
-	MaxProtectedBytes        int64
-	Schedule                 string
-	Retention                string
-	DataShards               int
-	ParityShards             int
-	ChallengeInterval        string
-	ReputationWindow         string
-	DisplayName              string
-	BootstrapPeers           []string
+	Path                      string
+	DataDir                   string
+	StoreDir                  string
+	CacheDir                  string
+	OfferBytes                int64
+	PerOwnerOfferBytes        int64
+	ProtocolID                string
+	MinPeers                  int
+	Discovery                 string
+	LocalDiscoveryService     string
+	RemoteDiscoveryNamespace  string
+	RemoteDiscoveryInterval   string
+	PublicDiscoveryPeers      []string
+	ProtectedRoots            []string
+	MaxProtectedBytes         int64
+	Schedule                  string
+	Retention                 string
+	RecoveryExternalPath      string
+	RecoveryRetainGenerations int
+	DataShards                int
+	ParityShards              int
+	ChallengeInterval         string
+	ReputationWindow          string
+	DisplayName               string
+	BootstrapPeers            []string
 }
 
 func SummarizeConfig(cfg config.Config, path string) (ConfigSummary, error) {
@@ -45,28 +47,31 @@ func SummarizeConfig(cfg config.Config, path string) (ConfigSummary, error) {
 		return ConfigSummary{}, err
 	}
 	return ConfigSummary{
-		Path:                     path,
-		DataDir:                  paths.DataDir,
-		StoreDir:                 paths.StoreDir,
-		CacheDir:                 paths.CacheDir,
-		OfferBytes:               cfg.Storage.OfferBytes,
-		ProtocolID:               cfg.Network.ProtocolID,
-		MinPeers:                 cfg.Network.MinPeers,
-		Discovery:                cfg.Network.Discovery,
-		LocalDiscoveryService:    cfg.Network.LocalDiscoveryService,
-		RemoteDiscoveryNamespace: cfg.Network.RemoteDiscoveryNamespace,
-		RemoteDiscoveryInterval:  cfg.Network.RemoteDiscoveryInterval,
-		PublicDiscoveryPeers:     append([]string(nil), cfg.Network.PublicDiscoveryPeers...),
-		ProtectedRoots:           NormalizeRootList(cfg.Backup.Roots),
-		MaxProtectedBytes:        cfg.Backup.MaxBytes,
-		Schedule:                 cfg.Backup.Schedule,
-		Retention:                cfg.Backup.Retention,
-		DataShards:               cfg.Backup.DataShards,
-		ParityShards:             cfg.Backup.ParityShards,
-		ChallengeInterval:        cfg.Trust.ChallengeInterval,
-		ReputationWindow:         cfg.Trust.ReputationWindow,
-		DisplayName:              cfg.Node.DisplayName,
-		BootstrapPeers:           append([]string(nil), cfg.Network.BootstrapPeers...),
+		Path:                      path,
+		DataDir:                   paths.DataDir,
+		StoreDir:                  paths.StoreDir,
+		CacheDir:                  paths.CacheDir,
+		OfferBytes:                cfg.Storage.OfferBytes,
+		PerOwnerOfferBytes:        cfg.Storage.PerOwnerOfferBytes,
+		ProtocolID:                cfg.Network.ProtocolID,
+		MinPeers:                  cfg.Network.MinPeers,
+		Discovery:                 cfg.Network.Discovery,
+		LocalDiscoveryService:     cfg.Network.LocalDiscoveryService,
+		RemoteDiscoveryNamespace:  cfg.Network.RemoteDiscoveryNamespace,
+		RemoteDiscoveryInterval:   cfg.Network.RemoteDiscoveryInterval,
+		PublicDiscoveryPeers:      append([]string(nil), cfg.Network.PublicDiscoveryPeers...),
+		ProtectedRoots:            NormalizeRootList(cfg.Backup.Roots),
+		MaxProtectedBytes:         cfg.Backup.MaxBytes,
+		Schedule:                  cfg.Backup.Schedule,
+		Retention:                 cfg.Backup.Retention,
+		RecoveryExternalPath:      cfg.Recovery.ExternalPath,
+		RecoveryRetainGenerations: cfg.Recovery.RetainGenerations,
+		DataShards:                cfg.Backup.DataShards,
+		ParityShards:              cfg.Backup.ParityShards,
+		ChallengeInterval:         cfg.Trust.ChallengeInterval,
+		ReputationWindow:          cfg.Trust.ReputationWindow,
+		DisplayName:               cfg.Node.DisplayName,
+		BootstrapPeers:            append([]string(nil), cfg.Network.BootstrapPeers...),
 	}, nil
 }
 
@@ -194,6 +199,12 @@ func ApplyConfigSet(cfg *config.Config, key, value string) error {
 			return err
 		}
 		cfg.Storage.OfferBytes = n
+	case "storage.per_owner_offer_bytes":
+		n, err := ParseByteSize(value)
+		if err != nil {
+			return err
+		}
+		cfg.Storage.PerOwnerOfferBytes = n
 	case "network.protocol_id":
 		cfg.Network.ProtocolID = value
 	case "network.discovery":
@@ -216,6 +227,16 @@ func ApplyConfigSet(cfg *config.Config, key, value string) error {
 		cfg.Backup.Schedule = value
 	case "backup.retention":
 		cfg.Backup.Retention = value
+	case "recovery.external_path":
+		cfg.Recovery.ExternalPath = value
+	case "recovery.retain_generations":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("recovery retain generations: %w", err)
+		}
+		cfg.Recovery.RetainGenerations = n
+	case "recovery.retry_interval":
+		cfg.Recovery.RetryInterval = value
 	case "trust.challenge_interval":
 		cfg.Trust.ChallengeInterval = value
 	case "trust.reputation_window":
@@ -242,15 +263,7 @@ func SaveConfig(cfg config.Config, path string) error {
 	if path == "" {
 		return errors.New("config path is required")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
-	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o600)
+	return config.Save(cfg, path)
 }
 
 func ParseByteSize(value string) (int64, error) {

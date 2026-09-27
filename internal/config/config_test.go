@@ -126,3 +126,39 @@ func TestLoadParsesJSONConfig(t *testing.T) {
 		t.Fatalf("roots = %v, want [/tmp/source]", got)
 	}
 }
+
+func TestLoadRejectsUnknownConfigurationKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"storage":{"not_a_setting":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load accepted an unknown configuration key")
+	}
+}
+
+func TestSaveConfigDoesNotPersistIdentityPassphrase(t *testing.T) {
+	cfg := Default()
+	cfg.Node.DataDir = t.TempDir()
+	cfg.Trust.IdentityPassphrase = "synthetic-secret"
+	path := filepath.Join(cfg.Node.DataDir, "config.json")
+	if err := Save(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) == "" || string(data) == "synthetic-secret" || contains(string(data), "synthetic-secret") {
+		t.Fatalf("config persisted secret: %s", data)
+	}
+}
+
+func contains(value, needle string) bool {
+	for i := 0; i+len(needle) <= len(value); i++ {
+		if value[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
+}

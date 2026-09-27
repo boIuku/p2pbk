@@ -29,19 +29,45 @@ DOCKER = {
 
 def check(paths, required):
     passed, invalid = set(), []
+    saw_package, completed_package = set(), set()
+    allowed_actions = {"start", "run", "output", "pass", "fail", "skip"}
     for path in paths:
-        with open(path, encoding="utf-8-sig") as stream:
-            for line in stream:
-                if not line.strip():
-                    continue
-                event = json.loads(line)
-                action, test = event.get("Action"), event.get("Test", "")
-                if action == "fail":
-                    invalid.append(f"failed: {event.get('Package')}/{test}")
-                if action == "pass" and test:
-                    passed.add(test)
-                if action == "skip" and test in required:
-                    invalid.append(f"required contract skipped: {test}")
+        try:
+            with open(path, encoding="utf-8-sig") as stream:
+                saw_lines = False
+                for line_number, line in enumerate(stream, 1):
+                    if not line.strip():
+                        continue
+                    saw_lines = True
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        invalid.append(f"malformed JSON evidence {path}:{line_number}: {exc}")
+                        continue
+                    if not isinstance(event, dict):
+                        invalid.append(f"malformed evidence {path}:{line_number}: event is not an object")
+                        continue
+                    action, package, test = event.get("Action"), event.get("Package", ""), event.get("Test", "")
+                    if action not in allowed_actions:
+                        invalid.append(f"unknown test action {path}:{line_number}: {action!r}")
+                    if package and action == "start":
+                        saw_package.add(package)
+                    if package and action in {"pass", "fail"} and not test:
+                        completed_package.add(package)
+                    if action == "fail":
+                        invalid.append(f"failed: {package}/{test}")
+                    if action == "pass" and test:
+                        passed.add(test)
+                    if action == "skip" and test in required:
+                        invalid.append(f"required contract skipped: {package}/{test}")
+                if not saw_lines:
+                    invalid.append(f"empty evidence file: {path}")
+        except OSError as exc:
+            invalid.append(f"cannot read evidence file {path}: {exc}")
+    if not saw_package:
+        invalid.append("no package start event was recorded")
+    elif not completed_package:
+        invalid.append("no package completion event was recorded; evidence may be truncated")
     invalid.extend(f"required contract did not pass: {name}" for name in sorted(required - passed))
     return invalid
 

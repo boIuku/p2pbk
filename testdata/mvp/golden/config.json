@@ -1,0 +1,43 @@
+{
+  "node": {
+    "data_dir": "<DATA_DIR>",
+    "identity": "identity.age",
+    "display_name": "fixture-node"
+  },
+  "storage": {
+    "mode": "remote",
+    "store_dir": "store",
+    "cache_dir": "cache",
+    "cache_size_bytes": 1073741824,
+    "offer_bytes": 10737418240
+  },
+  "network": {
+    "announce_addrs": [],
+    "listen_addrs": ["/ip4/0.0.0.0/tcp/0"],
+    "bootstrap_peers": ["<APPROVED_PEER>"],
+    "public_discovery_peers": [],
+    "discovery": "disabled",
+    "protocol_id": "/p2pbk/1.0.0",
+    "min_peers": 3,
+    "local_discovery_service": "_p2pbk._udp",
+    "remote_discovery_namespace": "p2pbk/storage/v1",
+    "remote_discovery_interval": "1m",
+    "force_private_reachability_for_relay": false
+  },
+  "backup": {
+    "data_shards": 6,
+    "parity_shards": 3,
+    "roots": ["<SOURCE_ROOT>"],
+    "max_bytes": 10737418240,
+    "schedule": "daily",
+    "retention": "30d",
+    "initial_full": true,
+    "incremental": true
+  },
+  "trust": {
+    "challenge_interval": "1h0m0s",
+    "reputation_window": "720h0m0s",
+    "challenge_max_length": 65536,
+    "identity_passphrase": ""
+  }
+}
