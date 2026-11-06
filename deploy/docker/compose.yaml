@@ -1,3 +1,10 @@
+# Manual cluster template. Before running Compose, supply bootstrap.json,
+# node1.json, node2.json, and node3.json next to this file and configure each
+# storage node's credentials and writable data directory. The JSON files are
+# specific to your cluster and are not included in the repository.
+# Each storage node must approve the client's peer ID before accepting backups.
+# For a self-contained test cluster, run the Docker integration suite described
+# in docs/TESTING.md; its harness generates its own Compose file and configs.
 services:
   bootstrap:
     build:
@@ -18,7 +25,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
     command: ["--config", "/etc/p2pbk/config.json", "daemon"]
-    volumes: 
+    volumes:
       - ./node2.json:/etc/p2pbk/config.json:ro
   node3:
     build:

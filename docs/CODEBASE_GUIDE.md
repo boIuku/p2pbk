@@ -103,8 +103,8 @@ flowchart TD
 | `internal/tui` | Bubble Tea terminal UI. | `app.go`, `forms.go` |
 | `internal/secrets` | Repository password environment helper. | `password.go` |
 | `test/integration` | In-process and Docker integration tests. | `e2e_test.go`, `docker_*_test.go` |
-| `deploy/docker` | Dockerfiles and compose example. | `Dockerfile`, `compose.yaml` |
-| `docs` | Human-facing docs. | `DEPLOYMENT.md`, this file |
+| `deploy/docker` | Dockerfiles and a manual Compose template that requires local config files. | `Dockerfile`, `compose.yaml` |
+| `docs` | Human-facing docs. | `TESTING.md`, this file |
 
 ### Important packages
 
@@ -1174,6 +1174,7 @@ Defaults live in `internal/config/applydefaults.go`. Validation lives mostly on
 
 | Field | Default | Meaning | Readers | Risk |
 | --- | --- | --- | --- | --- |
+| `mode` | `auto` | Choose `local` or `remote` explicitly, or let p2pbk choose on first open. | `node.ShouldUseDistributedStorage` | An explicit setting that differs from the saved mode is rejected. |
 | `store_dir` | `~/.p2pbk/store` | Local shard store. CLI init writes `store` relative to data dir. | blobserver, status, reset | Moving/deleting loses local shards. |
 | `cache_dir` | `~/.p2pbk/cache` | Cache directory. | status/config | Low current usage but keep with data dir. |
 | `cache_size_bytes` | `1 GiB` | Cache size setting. | TUI/config summary | Not heavily enforced today. |
@@ -1184,7 +1185,7 @@ Defaults live in `internal/config/applydefaults.go`. Validation lives mostly on
 | Field | Default | Meaning | Readers | Risk |
 | --- | --- | --- | --- | --- |
 | `listen_addrs` | TCP and QUIC random ports on all interfaces | libp2p listen addresses. | host creation | Bad multiaddr prevents networking. |
-| `bootstrap_peers` | empty | Storage/network peers to connect directly. | daemon, distributed storage, audit | Adding peers can switch storage into distributed mode. |
+| `bootstrap_peers` | empty | Storage/network peers to connect directly. | daemon, distributed storage, audit | Can select remote storage for a new repository in `auto` mode. |
 | `public_discovery_peers` | empty | Infrastructure peers for discovery/relay. | daemon, storage, audit | They are filtered from storage placement. |
 | `discovery` | `remote` | `remote`, `local`, or `disabled`. | daemon discovery | Invalid mode fails validation. |
 | `protocol_id` | `/p2pbk/1.0.0` | Config value for protocol identity. | config/status mostly | Wire protocol currently uses constant in `wire.go`. |
@@ -1288,13 +1289,17 @@ There are two shard backend shapes:
 - Distributed: `DistributedBackend` sends shard requests to remote peers,
   records locations, and stores receipts in localdb.
 
-`node.ShouldUseDistributedStorage` chooses distributed mode if:
+On first open, p2pbk uses `storage.mode` if it is explicitly set to `local` or
+`remote`. In `auto` mode, it chooses remote storage if bootstrap or public
+discovery peers are configured, or if the peer book contains a valid peer other
+than a public discovery peer. Otherwise, it chooses local storage.
 
-- `network.bootstrap_peers` is non-empty, or
-- saved peer records contain at least one non-public-discovery peer.
-
-That means a node can begin local-only and later switch to distributed once peers
-are known.
+p2pbk saves that choice in `storage.mode` under the data directory and uses it
+on later opens. Adding peers to a local repository leaves it local, and losing
+peers leaves a remote repository remote. Setting an explicit mode that differs
+from the saved mode returns an error. To try peer storage, set `storage.mode` to
+`remote` in the configuration for a new repository with its own data directory
+before opening it.
 
 ### Erasure coding
 
@@ -1513,18 +1518,17 @@ Integration tests:
 go test ./...
 ```
 
-Docker e2e tests run whenever the integration package is tested. Make sure
-Docker is running first:
+Docker e2e tests are opt-in. Start Docker, then run:
 
 ```powershell
-go test ./test/integration -run TestDocker -v
+go test -tags=docker ./test/integration -run '^TestDocker' -count=1 -timeout=20m
 ```
 
 With logs:
 
 ```powershell
 $env:P2PBK_DOCKER_E2E_LOGS="1"
-go test ./test/integration -run TestDocker -v
+go test -tags=docker ./test/integration -run '^TestDocker' -count=1 -timeout=20m -v
 ```
 
 ### What appears under-tested
@@ -1613,11 +1617,18 @@ needs storage, jump to `provider.go` and then `internal/node`.
 
 ### Run a local multi-node test
 
-Fastest path is Docker e2e:
+The Docker tests generate their own temporary cluster and configs:
 
 ```powershell
-go test ./test/integration -run TestDocker -v
+go test -tags=docker ./test/integration -run '^TestDocker' -count=1 -timeout=20m
 ```
+
+The checked-in [Compose file](../deploy/docker/compose.yaml) is a manual
+template. It expects `bootstrap.json`, `node1.json`, `node2.json`, and
+`node3.json` beside it. Supply those files and configure credentials and
+writable data directories for the storage nodes before running it. Before
+backing up, use `p2pbk peers approve <client-peer-id>` on each storage node
+with that node's configuration.
 
 For in-process logic, read `test/integration/e2e_test.go`; it starts libp2p
 hosts, registers blobservers, and opens distributed storage with an in-memory
